@@ -59,11 +59,13 @@ PayMongo `past_due` sets `past_due`, and Pro stays for the 3-day grace after the
 A cancel made at PayMongo sets `canceled` with access to the end of the paid month.
 A later paid invoice makes the plan active again.
 A team has no status: its plan date decides, as before.
+When PayMongo reports a team's subscription `unpaid` or cancelled, the team renews by hand again, so its owner can pay another way.
 
 **Cancel and resume.**
 Cancel stops the PayMongo subscription first.
 If PayMongo cannot stop it, nothing changes and the buyer sees an error.
 PayMongo cannot restart a cancelled subscription, so resume keeps the plan and makes it renewed by hand.
+A team owner can stop a team's auto-renewal on the team's Billing tab, with the same rule: PayMongo first, then the team keeps its plan date and renews by hand.
 A plan that renews by itself refuses a second checkout, and Billing hides Renew early for it.
 The PayMongo subscription of a person's plan is on `subscriptions.providerSubscriptionRef`, and of a team on `workspaces.providerSubscriptionRef` (`drizzle/0023_paymongo.sql`).
 

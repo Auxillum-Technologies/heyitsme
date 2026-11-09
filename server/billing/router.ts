@@ -33,6 +33,7 @@ import {
   getUserEntitlements,
   getUserSubscriptions,
   resumeSubscription,
+  stopTeamAutoRenewal,
   teamOfPayment,
 } from "./service";
 
@@ -47,6 +48,20 @@ async function limitOrThrow(key: string, max: number, windowMs: number) {
   const result = await rateLimit(key, max, windowMs);
   if (!result.allowed) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Too many requests. Please wait a moment and try again.",
     });
+}
+
+/** Stops a gateway subscription. A refusal becomes an error that says nothing changed, so the caller changes nothing. */
+function stopAtGateway(log: Record<string, number>) {
+  return (ref: string) =>
+    getPaymentProvider()
+      .cancelSubscription(ref)
+      .catch(error => {
+        logJson("error", "subscription cancel failed at the gateway", { ...log, error: String(error) });
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Your plan could not be stopped at the payment provider. Nothing changed. Please try again in a few minutes.",
+        });
+      });
 }
 
 const CLOSED_MESSAGES: Record<CheckoutClosedError["reason"], string> = {
@@ -244,17 +259,7 @@ export const billingRouter = router({
 
   cancelSubscription: protectedProcedure.mutation(async ({ ctx }) => {
     const db = await requireDb();
-    const stopAtGateway = (ref: string) =>
-      getPaymentProvider()
-        .cancelSubscription(ref)
-        .catch(error => {
-          logJson("error", "subscription cancel failed at the gateway", { userId: ctx.user.id, error: String(error) });
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: "Your plan could not be stopped at the payment provider. Nothing changed. Please try again in a few minutes.",
-          });
-        });
-    const updated = await cancelAtPeriodEnd(db, ctx.user.id, stopAtGateway);
+    const updated = await cancelAtPeriodEnd(db, ctx.user.id, stopAtGateway({ userId: ctx.user.id }));
     if (!updated)
       throw new TRPCError({
         code: "NOT_FOUND",
@@ -262,6 +267,17 @@ export const billingRouter = router({
       });
     return { currentPeriodEnd: updated.currentPeriodEnd };
   }),
+
+  /** Stops a team's plan from renewing by itself. Only its owner can. The team keeps its plan date. */
+  cancelTeamSubscription: protectedProcedure
+    .input(z.object({ workspaceId: z.number().int().positive() }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const { workspace } = await requireWorkspaceOwner(db, ctx.user.id, input.workspaceId);
+      const updated = await stopTeamAutoRenewal(db, workspace, stopAtGateway({ userId: ctx.user.id, workspaceId: workspace.id }));
+      if (!updated) throw new TRPCError({ code: "NOT_FOUND", message: "This team's plan does not renew by itself." });
+      return { accessUntil: updated.accessUntil };
+    }),
 
   resumeSubscription: protectedProcedure.mutation(async ({ ctx }) => {
     const updated = await resumeSubscription(await requireDb(), ctx.user.id);

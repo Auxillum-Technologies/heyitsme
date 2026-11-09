@@ -446,7 +446,7 @@ function Billing({ workspaceId }: { workspaceId: number }) {
     <p>{seats.active} active, {seats.invited} invited, {seats.suspended} suspended. Each of them holds a seat. Removing a person or cancelling an invitation frees it.</p>
     {seats.used > seats.allowed ? <p role="status"><strong>This team has more people than seats.</strong> Nobody is removed, but new invitations wait until there is a free seat.</p> : null}
     <p>{state === "unpaid" ? "This team is not paid for yet." : ended ? `The plan ended on ${day(accessUntil)}.` : accessUntil ? `The plan runs until ${day(accessUntil)}.` : "This team has no end date."}</p>
-    {renewsAutomatically && state === "active" ? <p className="gr-attribution">This plan renews by itself each month with Maya. Nothing to pay here.</p>
+    {renewsAutomatically && state === "active" ? <StopAutoRenew workspaceId={workspaceId} accessUntil={accessUntil} />
       : state === "free" ? <p className="gr-attribution">This team has no end date, so there is nothing to pay here. To change the number of seats, contact heyitsme.</p>
       : plan.checkoutOpen ? <>
         <p>Teams is {price} for each team, with {plan.seats} seats. {state === "active" ? "Paying now adds one month after the date above." : "Paying opens the team for one month from today."} If the plan runs out and is not renewed within {HOLD_GRACE_DAYS} days, the team is put on hold until it is paid. Nothing is deleted.</p>
@@ -454,6 +454,24 @@ function Billing({ workspaceId }: { workspaceId: number }) {
         <p className="gr-attribution">You pay on the payment provider's page and come back to your Billing page. For more than {plan.seats} seats, contact heyitsme.</p>
       </> : <p className="gr-attribution">Checkout for Teams is not open right now. To renew or change seats, contact heyitsme.</p>}
   </section>;
+}
+
+/** The owner stops a plan that renews by itself. The team keeps its plan date and is renewed by hand after that. */
+function StopAutoRenew({ workspaceId, accessUntil }: { workspaceId: number; accessUntil: Date | string | null }) {
+  const utils = trpc.useUtils();
+  const stop = trpc.billing.cancelTeamSubscription.useMutation();
+  const onStop = async () => {
+    try {
+      const result = await stop.mutateAsync({ workspaceId });
+      toast.success(`Auto-renewal is off. The team stays paid until ${day(result.accessUntil)}. Renew by hand before then to keep it open.`);
+      await Promise.all([utils.teams.billing.invalidate({ workspaceId }), utils.billing.teamPlans.invalidate()]);
+    } catch { /* The error shows under the button. */ }
+  };
+  return <>
+    <p className="gr-attribution">This plan renews by itself with Maya on {day(accessUntil)}. Stop auto-renewal before then to stop the next payment.</p>
+    <div className="gr-actions"><button type="button" className="gr-secondary" disabled={stop.isPending} onClick={() => void onStop()}>{stop.isPending ? "Stopping..." : "Stop auto-renewal"}</button></div>
+    {stop.error ? <p role="alert" className="gr-error">{stop.error.message}</p> : null}
+  </>;
 }
 
 function Settings({ workspace, role, onGone }: { workspace: Workspace; role: WorkspaceRole; onGone: () => void }) {

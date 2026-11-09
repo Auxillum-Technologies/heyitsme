@@ -260,7 +260,7 @@ export class PayMongoProvider implements PaymentProvider {
     const raw = await this.call("GET", `/subscriptions/${providerSubscriptionRef}`);
     const invoice = subscriptionState(raw).latestInvoice;
     if (invoice?.paid) {
-      return { invoiceNo, status: "succeeded", amountMinor: invoice.amountMinor, currency: invoice.currency, providerRef: invoice.ref, channelCode: "paymaya", code: "paid" };
+      return { invoiceNo, status: "succeeded", amountMinor: invoice.amountMinor, currency: invoice.currency, providerRef: invoice.ref, channelCode: "paymaya", code: "paid", providerSubscriptionRef };
     }
     const gone = raw.attributes?.status === "incomplete_cancelled";
     return { invoiceNo, status: gone ? "failed" : "pending", amountMinor: 0, currency: "PHP", providerRef: null, channelCode: null, code: gone ? "incomplete_cancelled" : "open" };

@@ -34,6 +34,8 @@ export type PaymentResult = {
   channelCode: string | null;
   /** Gateway code, safe to store. Never shown raw to visitors. */
   code: string;
+  /** The gateway subscription this payment belongs to. Settling it links the plan to that subscription. */
+  providerSubscriptionRef?: string | null;
 };
 
 /** A gateway subscription as the gateway reports it. Statuses use billing's own names. */

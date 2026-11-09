@@ -251,7 +251,7 @@ describe("PayMongoProvider subscription read back", () => {
   it("settles the first payment of a subscription from its paid invoice", async () => {
     const { impl } = fakeFetch([200, subscriptionBody("active", paidInvoice)]);
     expect(await paymongo(impl).getPaymentStatus("HIM123", "subs_1")).toEqual({
-      invoiceNo: "HIM123", status: "succeeded", amountMinor: 29900, currency: "PHP", providerRef: "inv_2", channelCode: "paymaya", code: "paid",
+      invoiceNo: "HIM123", status: "succeeded", amountMinor: 29900, currency: "PHP", providerRef: "inv_2", channelCode: "paymaya", code: "paid", providerSubscriptionRef: "subs_1",
     });
   });
 

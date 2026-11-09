@@ -233,7 +233,7 @@ export function teamOfPayment(payment: Pick<Payment, "purpose" | "metadataJson">
  * Moves a team's plan date on by one month for a payment already marked succeeded. A plan still running is
  * extended from its end, a lapsed or unpaid one from today. Seats go up to the included number, never down.
  */
-async function settleTeamPayment(tx: Db, payment: Payment, now: Date): Promise<SettleOutcome> {
+async function settleTeamPayment(tx: Db, payment: Payment, now: Date, providerSubscriptionRef: string | null | undefined): Promise<SettleOutcome> {
   const workspaceId = teamOfPayment(payment);
   const [workspace] = workspaceId
     ? await tx
@@ -248,7 +248,10 @@ async function settleTeamPayment(tx: Db, payment: Payment, now: Date): Promise<S
   if (workspace.accessUntil === null) return { outcome: "rejected", userId: payment.userId, reason: "team_free" };
   const periodEnd = addCycle(workspace.accessUntil > now ? workspace.accessUntil : now, "monthly");
   const seatLimit = workspace.seatLimit !== null && workspace.seatLimit < TEAMS_PLAN.seats ? TEAMS_PLAN.seats : workspace.seatLimit;
-  await tx.update(workspaces).set({ accessUntil: periodEnd, seatLimit, updatedAt: now }).where(eq(workspaces.id, workspace.id));
+  await tx
+    .update(workspaces)
+    .set({ accessUntil: periodEnd, seatLimit, ...(providerSubscriptionRef ? { providerSubscriptionRef } : {}), updatedAt: now })
+    .where(eq(workspaces.id, workspace.id));
   await tx.insert(workspaceAuditLog).values({
     workspaceId: workspace.id,
     actorUserId: payment.userId,
@@ -343,7 +346,7 @@ export async function settlePayment(
       })
       .where(eq(payments.id, payment.id));
 
-    if (payment.purpose === TEAM_PAYMENT_PURPOSE) return settleTeamPayment(tx as unknown as Db, payment, now);
+    if (payment.purpose === TEAM_PAYMENT_PURPOSE) return settleTeamPayment(tx as unknown as Db, payment, now, result.providerSubscriptionRef);
 
     if (
       (payment.purpose !== "subscription" && payment.purpose !== "renewal") ||
@@ -411,6 +414,7 @@ export async function settlePayment(
           canceledAt: null,
           foundingMember: founding,
           foundingMemberNumber: foundingNumber,
+          ...(result.providerSubscriptionRef ? { providerSubscriptionRef: result.providerSubscriptionRef } : {}),
           updatedAt: now,
         })
         .where(eq(subscriptions.id, current.id));
@@ -437,6 +441,7 @@ export async function settlePayment(
         foundingMemberNumber: foundingNumber,
         currentPeriodStart: now,
         currentPeriodEnd: periodEnd,
+        providerSubscriptionRef: result.providerSubscriptionRef ?? null,
       })
       .returning({ id: subscriptions.id });
     return {
@@ -463,7 +468,8 @@ export async function cancelAtPeriodEnd(
   const subs = await getUserSubscriptions(db, userId);
   const current = subs.find(
     sub =>
-      subscriptionGrantsAccess(toSnapshot(sub), now) && sub.status === "active"
+      subscriptionGrantsAccess(toSnapshot(sub), now) &&
+      (sub.status === "active" || (sub.status === "past_due" && sub.providerSubscriptionRef !== null))
   );
   if (!current) return null;
   if (current.providerSubscriptionRef) await stopAtGateway(current.providerSubscriptionRef);
@@ -478,6 +484,27 @@ export async function cancelAtPeriodEnd(
     .where(eq(subscriptions.id, current.id))
     .returning();
   return updated;
+}
+
+/**
+ * Stops a team's plan from renewing by itself. The gateway is stopped first: if that fails nothing changes here.
+ * The team keeps its plan date and is renewed by hand from then on, with a reminder before it ends.
+ */
+export async function stopTeamAutoRenewal(
+  db: Db,
+  workspace: { id: number; providerSubscriptionRef: string | null },
+  stopAtGateway: (providerSubscriptionRef: string) => Promise<void>,
+  now = new Date()
+) {
+  const ref = workspace.providerSubscriptionRef;
+  if (!ref) return null;
+  await stopAtGateway(ref);
+  const [updated] = await db
+    .update(workspaces)
+    .set({ providerSubscriptionRef: null, updatedAt: now })
+    .where(and(eq(workspaces.id, workspace.id), eq(workspaces.providerSubscriptionRef, ref)))
+    .returning({ accessUntil: workspaces.accessUntil });
+  return updated ?? null;
 }
 
 /** Undo a cancel before the period ends. The plan is then renewed by hand, with a reminder before it ends. */

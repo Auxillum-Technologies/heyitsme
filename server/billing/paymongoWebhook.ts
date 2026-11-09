@@ -28,15 +28,6 @@ async function settleCheckout(db: Db, checkoutRef: string, origin: string) {
   await notifyActivation(outcome, origin);
 }
 
-/** Links the plan a subscription paid for to that subscription, so cancel, status and renewals find it. */
-async function linkSubscription(db: Db, outcome: SettleOutcome, providerSubscriptionRef: string) {
-  if (outcome.outcome === "activated") {
-    await db.update(subscriptions).set({ providerSubscriptionRef, updatedAt: new Date() }).where(eq(subscriptions.id, outcome.subscriptionId));
-  } else if (outcome.outcome === "team_activated") {
-    await db.update(workspaces).set({ providerSubscriptionRef, updatedAt: new Date() }).where(eq(workspaces.id, outcome.workspaceId));
-  }
-}
-
 /**
  * The plan follows what PayMongo reports (D3). Past due keeps Pro for PAST_DUE_GRACE_DAYS after the plan end.
  * Unpaid, after PayMongo's last retry, ends it now. A cancel made at PayMongo keeps the paid month. Only a paid
@@ -56,6 +47,10 @@ async function applySubscriptionStatus(db: Db, providerSubscriptionRef: string, 
       .where(and(mine, inArray(subscriptions.status, ["active", "past_due"])));
   } else if (status === "active") {
     await db.update(subscriptions).set({ status: "active", updatedAt: now }).where(and(mine, eq(subscriptions.status, "past_due")));
+  }
+  // A team whose subscription PayMongo has ended renews by hand again, so its owner can pay another way.
+  if (status === "unpaid" || status === "canceled") {
+    await db.update(workspaces).set({ providerSubscriptionRef: null, updatedAt: now }).where(eq(workspaces.providerSubscriptionRef, providerSubscriptionRef));
   }
 }
 
@@ -97,6 +92,7 @@ async function settleLatestInvoice(
     providerRef: invoice.ref,
     channelCode: first.channel,
     code: "paid",
+    providerSubscriptionRef,
   });
 
   const [known] = await db.select({ invoiceNo: payments.providerTransactionId }).from(payments).where(eq(payments.providerInvoiceRef, invoice.ref)).limit(1);
@@ -135,7 +131,6 @@ async function settleLatestInvoice(
     invoiceNo = renewal.invoiceNo;
   }
   const outcome = await settlePayment(db, result(invoiceNo));
-  await linkSubscription(db, outcome, providerSubscriptionRef);
   logJson("info", "paymongo subscription settled", { providerSubscriptionRef, invoiceRef: invoice.ref, outcome: outcome.outcome });
   return outcome;
 }

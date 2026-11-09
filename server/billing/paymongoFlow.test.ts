@@ -4,7 +4,7 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "../_core/context";
-import { billingAccounts, payments, subscriptions, users, workspaces } from "../../drizzle/schema";
+import { billingAccounts, payments, subscriptions, users, workspaceMembers, workspaces } from "../../drizzle/schema";
 import { ENV } from "../_core/env";
 import type { CheckoutRequest, PaymentProvider, PaymentResult, ProviderEvent, SubscriptionState } from "./provider";
 import { PAYMONGO_SCHEMA_STATEMENTS } from "./schemaSql";
@@ -67,6 +67,12 @@ class FakePayMongo implements PaymentProvider {
     return (JSON.parse(rawBody) as { event: ProviderEvent }).event;
   }
   async getPaymentStatus(invoiceNo: string, ref?: string | null): Promise<PaymentResult> {
+    if (ref?.startsWith("subs_")) {
+      const invoice = this.subs.get(ref)?.latestInvoice;
+      return invoice?.paid
+        ? { invoiceNo, status: "succeeded", amountMinor: invoice.amountMinor, currency: invoice.currency, providerRef: invoice.ref, channelCode: "paymaya", code: "paid", providerSubscriptionRef: ref }
+        : { invoiceNo, status: "pending", amountMinor: 0, currency: "PHP", providerRef: null, channelCode: null, code: "open" };
+    }
     const session = ref ? this.sessions.get(ref) : undefined;
     return { invoiceNo, ...(session ?? { status: "pending", amountMinor: 0, currency: "PHP", providerRef: null, channelCode: null, code: "open" }) };
   }
@@ -350,6 +356,28 @@ describe("PayMongo auto-renewal", () => {
     await expect(callerFor(user).billing.createTeamCheckout({ workspaceId: team.id, channel: "gcash" })).rejects.toThrow(/renews by itself/);
   });
 
+  it("links the plan when the Billing page settles the first Maya payment before the webhook arrives", async () => {
+    const { user, invoiceNo, ref } = await mayaBuyer();
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_1") });
+    expect((await callerFor(user).billing.paymentStatus({ invoiceNo })).status).toBe("succeeded");
+    expect(await proRow(user.id)).toMatchObject({ status: "active", providerSubscriptionRef: ref });
+
+    await deliver(subscriptionEvent(ref));
+    expect(await proRow(user.id)).toMatchObject({ status: "active", providerSubscriptionRef: ref });
+    await expect(callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "gcash" })).rejects.toThrow(/renews by itself/);
+    await callerFor(user).billing.cancelSubscription();
+    expect(gateway.canceled).toEqual([ref]);
+
+    Object.assign(ENV, { teamsEnabled: true, teamsBillingEnabled: true });
+    const team = await callerFor(user).teams.create({ name: "Acme" });
+    const teamCheckout = await callerFor(user).billing.createTeamCheckout({ workspaceId: team.id, channel: "maya" });
+    const teamRef = (await paymentRow(teamCheckout.invoiceNo)).providerCheckoutRef!;
+    gateway.subs.set(teamRef, { status: "active", latestInvoice: paidInvoice("inv_t1", 149900) });
+    expect((await callerFor(user).billing.paymentStatus({ invoiceNo: teamCheckout.invoiceNo })).status).toBe("succeeded");
+    const [paidTeam] = await db.select().from(workspaces).where(eq(workspaces.id, team.id));
+    expect(paidTeam.providerSubscriptionRef).toBe(teamRef);
+  });
+
   it("ignores a subscription heyitsme never opened", async () => {
     gateway.subs.set("subs_stranger", { status: "active", latestInvoice: paidInvoice("inv_9") });
     expect((await deliver(subscriptionEvent("subs_stranger"))).status).toBe(200);
@@ -407,6 +435,59 @@ describe("PayMongo subscription status", () => {
   });
 });
 
+describe("a team's PayMongo subscription", () => {
+  async function mayaTeam() {
+    Object.assign(ENV, { teamsEnabled: true, teamsBillingEnabled: true });
+    const owner = await makeUser();
+    const team = await callerFor(owner).teams.create({ name: "Acme" });
+    const { invoiceNo } = await callerFor(owner).billing.createTeamCheckout({ workspaceId: team.id, channel: "maya" });
+    const ref = (await paymentRow(invoiceNo)).providerCheckoutRef!;
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_1", 149900) });
+    await deliver(subscriptionEvent(ref));
+    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, team.id));
+    return { owner, team, ref, row };
+  }
+  const teamRow = async (id: number) => (await db.select().from(workspaces).where(eq(workspaces.id, id)))[0];
+
+  for (const status of ["unpaid", "canceled"] as const) {
+    it(`${status} at PayMongo: the team renews by hand again, so its owner can pay another way`, async () => {
+      const { owner, team, ref } = await mayaTeam();
+      gateway.subs.set(ref, { status, latestInvoice: { ...paidInvoice("inv_2", 149900), paid: false } });
+      await deliver(subscriptionEvent(ref));
+      expect((await teamRow(team.id)).providerSubscriptionRef).toBeNull();
+      expect((await callerFor(owner).teams.billing({ workspaceId: team.id })).renewsAutomatically).toBe(false);
+      await expect(callerFor(owner).billing.createTeamCheckout({ workspaceId: team.id, channel: "gcash" })).resolves.toMatchObject({ redirectUrl: expect.any(String) });
+    });
+  }
+
+  it("the owner stops it at PayMongo, keeps the paid month, and renews by hand from then on", async () => {
+    const { owner, team, ref, row } = await mayaTeam();
+    const result = await callerFor(owner).billing.cancelTeamSubscription({ workspaceId: team.id });
+    expect(gateway.canceled).toEqual([ref]);
+    expect(result.accessUntil).toEqual(row.accessUntil);
+    expect(await teamRow(team.id)).toMatchObject({ providerSubscriptionRef: null, accessUntil: row.accessUntil });
+    expect((await callerFor(owner).teams.billing({ workspaceId: team.id })).renewsAutomatically).toBe(false);
+    await expect(callerFor(owner).billing.createTeamCheckout({ workspaceId: team.id, channel: "gcash" })).resolves.toMatchObject({ redirectUrl: expect.any(String) });
+    await expect(callerFor(owner).billing.cancelTeamSubscription({ workspaceId: team.id })).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("changes nothing when PayMongo cannot stop it", async () => {
+    const { owner, team, ref } = await mayaTeam();
+    gateway.cancelFails = true;
+    await expect(callerFor(owner).billing.cancelTeamSubscription({ workspaceId: team.id })).rejects.toThrow(/could not be stopped/);
+    expect((await teamRow(team.id)).providerSubscriptionRef).toBe(ref);
+  });
+
+  it("only the team owner can stop it", async () => {
+    const { team, ref } = await mayaTeam();
+    const member = await makeUser();
+    await db.insert(workspaceMembers).values({ workspaceId: team.id, userId: member.id, email: member.email!, role: "admin", status: "active" });
+    await expect(callerFor(member).billing.cancelTeamSubscription({ workspaceId: team.id })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(gateway.canceled).toEqual([]);
+    expect((await teamRow(team.id)).providerSubscriptionRef).toBe(ref);
+  });
+});
+
 describe("cancel and resume", () => {
   async function activeMaya() {
     const user = await makeUser();
@@ -423,6 +504,16 @@ describe("cancel and resume", () => {
     expect(gateway.canceled).toEqual([ref]);
     expect(await proRow(user.id)).toMatchObject({ status: "canceled", cancelAtPeriodEnd: true });
     expect((await callerFor(user).billing.me()).entitlements.plan).toBe("pro");
+  });
+
+  it("stops a past due plan at PayMongo, so PayMongo stops retrying the charge", async () => {
+    const { user, ref } = await activeMaya();
+    gateway.subs.set(ref, { status: "past_due", latestInvoice: { ...paidInvoice("inv_2"), paid: false } });
+    await deliver(subscriptionEvent(ref));
+    expect((await proRow(user.id)).status).toBe("past_due");
+    await callerFor(user).billing.cancelSubscription();
+    expect(gateway.canceled).toEqual([ref]);
+    expect(await proRow(user.id)).toMatchObject({ status: "canceled", cancelAtPeriodEnd: true });
   });
 
   it("changes nothing when PayMongo cannot stop it, so the buyer is not charged after a cancel", async () => {
