@@ -449,10 +449,15 @@ export async function settlePayment(
   });
 }
 
-/** Stops renewal reminders. Access continues until the period ends; nothing is deleted. */
+/**
+ * Stops renewal reminders. Access continues until the period ends; nothing is deleted. A plan that renews by
+ * itself is stopped at the gateway first: if that fails nothing changes here, so the buyer is never charged
+ * for a plan heyitsme shows as canceled.
+ */
 export async function cancelAtPeriodEnd(
   db: Db,
   userId: number,
+  stopAtGateway: (providerSubscriptionRef: string) => Promise<void>,
   now = new Date()
 ) {
   const subs = await getUserSubscriptions(db, userId);
@@ -461,6 +466,7 @@ export async function cancelAtPeriodEnd(
       subscriptionGrantsAccess(toSnapshot(sub), now) && sub.status === "active"
   );
   if (!current) return null;
+  if (current.providerSubscriptionRef) await stopAtGateway(current.providerSubscriptionRef);
   const [updated] = await db
     .update(subscriptions)
     .set({
@@ -474,7 +480,7 @@ export async function cancelAtPeriodEnd(
   return updated;
 }
 
-/** Undo a cancel before the period ends. */
+/** Undo a cancel before the period ends. The plan is then renewed by hand, with a reminder before it ends. */
 export async function resumeSubscription(
   db: Db,
   userId: number,
@@ -487,12 +493,14 @@ export async function resumeSubscription(
       subscriptionGrantsAccess(toSnapshot(sub), now)
   );
   if (!current) return null;
+  // A cancelled gateway subscription cannot restart, so a resumed plan is renewed by hand from here on.
   const [updated] = await db
     .update(subscriptions)
     .set({
       status: "active",
       cancelAtPeriodEnd: false,
       canceledAt: null,
+      providerSubscriptionRef: null,
       updatedAt: now,
     })
     .where(eq(subscriptions.id, current.id))

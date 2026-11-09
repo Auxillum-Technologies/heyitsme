@@ -14,12 +14,12 @@ import { and, asc, eq, isNull } from "drizzle-orm";
 import { workspaceMembers, workspaces } from "../../drizzle/schema";
 import { ENV } from "../_core/env";
 import { clientIp, hashIdentifier, rateLimit } from "../_core/rateLimit";
-import { siteOrigin } from "../_core/seo";
+import { logJson, siteOrigin } from "../_core/seo";
 import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
 import { getDb } from "../db";
 import { requireWorkspaceOwner } from "../teams/access";
 import { assertTeamCapability, teamPlanState } from "../teams/entitlements";
-import { CheckoutClosedError, enabledChannels, enabledCycles, reconcileInvoice, startCheckout, startTeamCheckout, teamsCheckoutOpen,
+import { CheckoutClosedError, enabledChannels, enabledCycles, getPaymentProvider, reconcileInvoice, startCheckout, startTeamCheckout, teamsCheckoutOpen,
 } from "./checkout";
 import { ownerCardHolds } from "./hold";
 import { notifyActivation } from "./paymentRoutes";
@@ -239,7 +239,18 @@ export const billingRouter = router({
   ),
 
   cancelSubscription: protectedProcedure.mutation(async ({ ctx }) => {
-    const updated = await cancelAtPeriodEnd(await requireDb(), ctx.user.id);
+    const db = await requireDb();
+    const stopAtGateway = (ref: string) =>
+      getPaymentProvider()
+        .cancelSubscription(ref)
+        .catch(error => {
+          logJson("error", "subscription cancel failed at the gateway", { userId: ctx.user.id, error: String(error) });
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Your plan could not be stopped at the payment provider. Nothing changed. Please try again in a few minutes.",
+          });
+        });
+    const updated = await cancelAtPeriodEnd(db, ctx.user.id, stopAtGateway);
     if (!updated)
       throw new TRPCError({
         code: "NOT_FOUND",

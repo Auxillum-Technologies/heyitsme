@@ -387,6 +387,50 @@ describe("PayMongo subscription status", () => {
   });
 });
 
+describe("cancel and resume", () => {
+  async function activeMaya() {
+    const user = await makeUser();
+    const { invoiceNo } = await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "maya" });
+    const ref = (await paymentRow(invoiceNo)).providerCheckoutRef!;
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_1") });
+    await deliver(subscriptionEvent(ref));
+    return { user, ref };
+  }
+
+  it("stops the PayMongo subscription, and keeps Pro to the end of the paid month", async () => {
+    const { user, ref } = await activeMaya();
+    await callerFor(user).billing.cancelSubscription();
+    expect(gateway.canceled).toEqual([ref]);
+    expect(await proRow(user.id)).toMatchObject({ status: "canceled", cancelAtPeriodEnd: true });
+    expect((await callerFor(user).billing.me()).entitlements.plan).toBe("pro");
+  });
+
+  it("changes nothing when PayMongo cannot stop it, so the buyer is not charged after a cancel", async () => {
+    const { user } = await activeMaya();
+    gateway.cancelFails = true;
+    await expect(callerFor(user).billing.cancelSubscription()).rejects.toThrow(/could not be stopped/);
+    expect(await proRow(user.id)).toMatchObject({ status: "active", cancelAtPeriodEnd: false });
+  });
+
+  it("cancels a prepaid month in heyitsme only", async () => {
+    const user = await makeUser();
+    const { invoiceNo } = await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "gcash" });
+    const ref = (await paymentRow(invoiceNo)).providerCheckoutRef!;
+    gateway.sessions.set(ref, sessionPaid());
+    await deliver(checkoutEvent(ref));
+    await callerFor(user).billing.cancelSubscription();
+    expect(gateway.canceled).toEqual([]);
+    expect(await proRow(user.id)).toMatchObject({ status: "canceled", cancelAtPeriodEnd: true });
+  });
+
+  it("resume after a cancel keeps Pro, renewed by hand: PayMongo cannot restart a cancelled subscription", async () => {
+    const { user } = await activeMaya();
+    await callerFor(user).billing.cancelSubscription();
+    await callerFor(user).billing.resumeSubscription();
+    expect(await proRow(user.id)).toMatchObject({ status: "active", cancelAtPeriodEnd: false, providerSubscriptionRef: null });
+  });
+});
+
 describe("schema", () => {
   it("ensureSchema runs exactly the statements of drizzle/0023_paymongo.sql", () => {
     const file = readFileSync(path.resolve(import.meta.dirname, "../../drizzle/0023_paymongo.sql"), "utf8");
