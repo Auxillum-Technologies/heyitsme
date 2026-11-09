@@ -146,7 +146,14 @@ async function handleWebhook(req: Request, res: Response) {
     res.status(503).json({ error: "Unavailable." });
     return;
   }
-  const provider = getPaymentProvider();
+  let provider: PaymentProvider;
+  try {
+    provider = getPaymentProvider();
+  } catch (error) {
+    logJson("error", "paymongo webhook gateway unavailable", { error: String(error) });
+    res.status(503).json({ error: "Unavailable." });
+    return;
+  }
   const rawBody = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
   const signature = typeof req.headers["paymongo-signature"] === "string" ? req.headers["paymongo-signature"] : undefined;
   const event = provider.parseWebhook?.(rawBody, signature) ?? null;

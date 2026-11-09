@@ -68,6 +68,7 @@ PayMongo cannot restart a cancelled subscription, so resume keeps the plan and m
 A canceled plan that is then paid by hand (Renew early) also renews by hand, because its PayMongo subscription is already stopped.
 A team owner can stop a team's auto-renewal on the team's Billing tab, with the same rule: PayMongo first, then the team keeps its plan date and renews by hand.
 A plan that renews by itself refuses a second checkout, and Billing hides Renew early for it.
+While a plan still has paid time, Renew early offers only one-time methods, and the server refuses Maya auto-renewal, because PayMongo charges from the day a subscription starts.
 The PayMongo subscription of a person's plan is on `subscriptions.providerSubscriptionRef`, and of a team on `workspaces.providerSubscriptionRef` (`drizzle/0023_paymongo.sql`).
 
 **Reminders.**

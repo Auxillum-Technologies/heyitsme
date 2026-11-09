@@ -34,7 +34,12 @@ export default function UpgradeDialog({
   const billing = useBilling(open && isAuthenticated);
   const checkout = trpc.billing.createCheckout.useMutation();
   const [channel, setChannel] = useState<PaymentChannel | null>(null);
-  const selected = channel ?? billing.data?.channels[0];
+  // Auto-renewal charges from the day it starts, so a plan with paid time left renews early by a one-time payment.
+  const paidTimeLeft = Boolean(billing.data?.subscription && new Date(billing.data.subscription.currentPeriodEnd).getTime() > Date.now());
+  const channels = billing.data
+    ? paidTimeLeft ? billing.data.channels.filter(c => !billing.data.autoRenewChannels.includes(c)) : billing.data.channels
+    : [];
+  const selected = channel && channels.includes(channel) ? channel : channels[0];
   const start = async () => {
     if (!isAuthenticated) {
       startGoogleLogin("/app/billing?upgrade=1");
@@ -64,7 +69,7 @@ export default function UpgradeDialog({
           <span>/month</span>
         </p>
         <p>5 cards · 365-day analytics · Advanced QR · Contact management</p>
-        {billing.data?.channels.map(c => (
+        {channels.map(c => (
           <label key={c}>
             <input
               type="radio"
@@ -79,7 +84,7 @@ export default function UpgradeDialog({
           className="glass-button glass-button-primary upgrade-cta"
           disabled={
             isAuthenticated &&
-            (!billing.data?.checkoutOpen || checkout.isPending)
+            (!billing.data?.checkoutOpen || !selected || checkout.isPending)
           }
           onClick={() => void start()}
         >

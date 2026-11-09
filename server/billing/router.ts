@@ -71,6 +71,7 @@ const CLOSED_MESSAGES: Record<CheckoutClosedError["reason"], string> = {
   plan_off: "That plan is not available yet.",
   team_free: "This team has no end date, so there is nothing to pay.",
   auto_renewing: "This plan renews by itself each month, so there is nothing to pay now.",
+  renew_early_auto: "Auto-renewal can start only once the paid time ends. To renew early, pick a one-time payment method.",
 };
 
 /** Turns a checkout failure into a message a buyer can read. Gateway wording stays in the log. */

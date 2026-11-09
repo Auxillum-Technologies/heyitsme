@@ -220,6 +220,20 @@ describe("PayMongo webhook route", () => {
     const res = await deliver(JSON.stringify({ event: { kind: "checkout", ref: "cs_unknown" } }));
     expect(res).toEqual({ status: 200, body: { received: true } });
   });
+
+  it("answers 503 while the active gateway has no credentials, and keeps serving", async () => {
+    setPaymentProvider(null);
+    Object.assign(ENV, { paymentProvider: "2c2p", paymentGatewayMerchantId: "", paymentGatewaySecret: "" });
+    expect((await deliver(checkoutEvent("cs_1"))).status).toBe(503);
+    Object.assign(ENV, { paymentProvider: "paymongo", paymongoSecretKey: "" });
+    expect((await deliver(checkoutEvent("cs_1"))).status).toBe(503);
+  });
+
+  it("answers 400 when the active gateway takes no PayMongo webhooks", async () => {
+    setPaymentProvider(null);
+    Object.assign(ENV, { paymentProvider: "2c2p", paymentGatewayMerchantId: "JT01", paymentGatewaySecret: "secret" });
+    expect((await deliver(checkoutEvent("cs_1"))).status).toBe(400);
+  });
 });
 
 const sessionPaid = (amountMinor = 29900) => ({ status: "succeeded" as const, amountMinor, currency: "PHP", providerRef: "pay_1", channelCode: "gcash", code: "paid" });
@@ -562,6 +576,45 @@ describe("renew by hand after a cancel", () => {
     const at = new Date(me.subscription!.currentPeriodEnd.getTime() - 2 * DAY);
     expect((await runPlanCron(db, "https://heyitsme.test", at)).renewalReminders).toBe(1);
     await expect(callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "gcash" })).resolves.toMatchObject({ redirectUrl: expect.any(String) });
+  });
+});
+
+describe("renew early", () => {
+  const RENEW_EARLY = /only once the paid time ends/;
+
+  it("Pro with paid time left renews early by a one-time payment only; Maya auto-renewal opens once the plan ends", async () => {
+    const user = await makeUser();
+    const first = await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "gcash" });
+    const session = (await paymentRow(first.invoiceNo)).providerCheckoutRef!;
+    gateway.sessions.set(session, sessionPaid());
+    await deliver(checkoutEvent(session));
+
+    await expect(callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "maya" })).rejects.toThrow(RENEW_EARLY);
+    expect(gateway.recurring).toHaveLength(0);
+    await expect(callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "qrph" })).resolves.toMatchObject({ redirectUrl: expect.any(String) });
+
+    const row = await proRow(user.id);
+    await db.update(subscriptions).set({ currentPeriodEnd: new Date(Date.now() - DAY) }).where(eq(subscriptions.id, row.id));
+    await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "maya" });
+    expect(gateway.recurring).toHaveLength(1);
+  });
+
+  it("a team with paid time left renews early by a one-time payment only; Maya auto-renewal opens once the plan ends", async () => {
+    Object.assign(ENV, { teamsEnabled: true, teamsBillingEnabled: true });
+    const owner = await makeUser();
+    const team = await callerFor(owner).teams.create({ name: "Acme" });
+    const first = await callerFor(owner).billing.createTeamCheckout({ workspaceId: team.id, channel: "gcash" });
+    const session = (await paymentRow(first.invoiceNo)).providerCheckoutRef!;
+    gateway.sessions.set(session, sessionPaid(149900));
+    await deliver(checkoutEvent(session));
+
+    await expect(callerFor(owner).billing.createTeamCheckout({ workspaceId: team.id, channel: "maya" })).rejects.toThrow(RENEW_EARLY);
+    expect(gateway.recurring).toHaveLength(0);
+    await expect(callerFor(owner).billing.createTeamCheckout({ workspaceId: team.id, channel: "card" })).resolves.toMatchObject({ redirectUrl: expect.any(String) });
+
+    await db.update(workspaces).set({ accessUntil: new Date(Date.now() - DAY) }).where(eq(workspaces.id, team.id));
+    await callerFor(owner).billing.createTeamCheckout({ workspaceId: team.id, channel: "maya" });
+    expect(gateway.recurring).toHaveLength(1);
   });
 });
 

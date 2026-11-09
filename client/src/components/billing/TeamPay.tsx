@@ -12,14 +12,17 @@ export function channelLabel(channel: PaymentChannel, autoRenew: readonly Paymen
  * One button per open payment method, for one team's monthly plan. The price shown comes from the server,
  * and the server charges its own figure whatever the browser holds.
  */
-export default function TeamPay({ workspaceId, channels, autoRenew = [], priceMinor, verb = "Pay", buttonClass }: {
+export default function TeamPay({ workspaceId, channels, autoRenew = [], priceMinor, renewEarly = false, buttonClass }: {
   workspaceId: number;
   channels: readonly PaymentChannel[];
   autoRenew?: readonly PaymentChannel[];
   priceMinor: number;
-  verb?: string;
+  renewEarly?: boolean;
   buttonClass: string;
 }) {
+  // Auto-renewal charges from the day it starts, so it opens only for a team with no paid time left.
+  const shown = renewEarly ? channels.filter(channel => !autoRenew.includes(channel)) : channels;
+  const verb = renewEarly ? "Renew early:" : "Pay";
   const checkout = trpc.billing.createTeamCheckout.useMutation();
   const pay = async (channel: PaymentChannel) => {
     try {
@@ -28,7 +31,7 @@ export default function TeamPay({ workspaceId, channels, autoRenew = [], priceMi
     } catch { /* The error shows under the buttons. */ }
   };
   return <>
-    {channels.map(channel => (
+    {shown.map(channel => (
       <button key={channel} type="button" className={buttonClass} disabled={checkout.isPending} onClick={() => void pay(channel)}>
         {checkout.isPending ? "Opening checkout…" : `${verb} ${formatPeso(priceMinor)} with ${channelLabel(channel, autoRenew)}`}
       </button>

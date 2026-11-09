@@ -73,7 +73,7 @@ export function teamsCheckoutOpen(): boolean {
 
 export class CheckoutClosedError extends Error {
   constructor(
-    readonly reason: "payments_off" | "channel_off" | "cycle_off" | "plan_off" | "team_free" | "auto_renewing"
+    readonly reason: "payments_off" | "channel_off" | "cycle_off" | "plan_off" | "team_free" | "auto_renewing" | "renew_early_auto"
   ) {
     super(reason);
   }
@@ -122,6 +122,10 @@ export async function startCheckout(
   if (plans.some(sub => sub.providerSubscriptionRef && (sub.status === "active" || sub.status === "past_due"))) {
     throw new CheckoutClosedError("auto_renewing");
   }
+  // A gateway subscription charges from the day it starts. While paid time is left, renew early by a one-time payment.
+  if (autoRenewChannels().includes(input.channel) && plans.some(sub => sub.status !== "expired" && sub.currentPeriodEnd > now)) {
+    throw new CheckoutClosedError("renew_early_auto");
+  }
   const invoiceNo = newInvoiceNo();
 
   await db.insert(payments).values({
@@ -159,7 +163,8 @@ export async function startTeamCheckout(
   user: Buyer,
   workspace: { id: number; accessUntil: Date | null; providerSubscriptionRef?: string | null },
   channel: PaymentChannel,
-  origin: string
+  origin: string,
+  now = new Date()
 ) {
   if (!ENV.paymentsEnabled) throw new CheckoutClosedError("payments_off");
   if (!teamsCheckoutOpen()) throw new CheckoutClosedError("plan_off");
@@ -167,6 +172,7 @@ export async function startTeamCheckout(
   // A team with no end date is free for good. Charging it would buy nothing.
   if (workspace.accessUntil === null) throw new CheckoutClosedError("team_free");
   if (workspace.providerSubscriptionRef) throw new CheckoutClosedError("auto_renewing");
+  if (autoRenewChannels().includes(channel) && workspace.accessUntil > now) throw new CheckoutClosedError("renew_early_auto");
 
   const account = await getOrCreateBillingAccount(db, user.id);
   const amountMinor = TEAMS_PLAN.priceMinor;

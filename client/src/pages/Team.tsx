@@ -450,7 +450,7 @@ function Billing({ workspaceId }: { workspaceId: number }) {
       : state === "free" ? <p className="gr-attribution">This team has no end date, so there is nothing to pay here. To change the number of seats, contact heyitsme.</p>
       : plan.checkoutOpen ? <>
         <p>Teams is {price} for each team, with {plan.seats} seats. {state === "active" ? "Paying now adds one month after the date above." : "Paying opens the team for one month from today."} If the plan runs out and is not renewed within {HOLD_GRACE_DAYS} days, the team is put on hold until it is paid. Nothing is deleted.</p>
-        <div className="gr-actions"><TeamPay workspaceId={workspaceId} channels={plan.channels} autoRenew={plan.autoRenewChannels} priceMinor={plan.priceMinor} verb={state === "active" ? "Renew early:" : "Pay"} buttonClass={state === "active" ? "gr-secondary" : "gr-primary"} /></div>
+        <div className="gr-actions"><TeamPay workspaceId={workspaceId} channels={plan.channels} autoRenew={plan.autoRenewChannels} priceMinor={plan.priceMinor} renewEarly={state === "active"} buttonClass={state === "active" ? "gr-secondary" : "gr-primary"} /></div>
         <p className="gr-attribution">You pay on the payment provider's page and come back to your Billing page. For more than {plan.seats} seats, contact heyitsme.</p>
       </> : <p className="gr-attribution">Checkout for Teams is not open right now. To renew or change seats, contact heyitsme.</p>}
   </section>;

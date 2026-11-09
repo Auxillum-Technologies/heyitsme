@@ -183,7 +183,7 @@ export default function PlanCards({ plan, offer, onUpgrade }: { plan: PlanCode; 
                 <div className="billing-actions">
                   <button type="button" className="outline-button" onClick={() => navigate(`/app/team/${team.id}`)}>Open team</button>
                   {team.state !== "free" && teams.checkoutOpen && !team.renewsAutomatically ? (
-                    <TeamPay workspaceId={team.id} channels={offer.channels} autoRenew={offer.autoRenewChannels} priceMinor={teams.priceMinor} verb={team.state === "active" ? "Renew early:" : "Pay"} buttonClass={team.state === "active" ? "outline-button" : "glass-button glass-button-primary"} />
+                    <TeamPay workspaceId={team.id} channels={offer.channels} autoRenew={offer.autoRenewChannels} priceMinor={teams.priceMinor} renewEarly={team.state === "active"} buttonClass={team.state === "active" ? "outline-button" : "glass-button glass-button-primary"} />
                   ) : null}
                 </div>
               </li>
