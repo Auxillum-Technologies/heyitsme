@@ -73,7 +73,7 @@ export function teamsCheckoutOpen(): boolean {
 
 export class CheckoutClosedError extends Error {
   constructor(
-    readonly reason: "payments_off" | "channel_off" | "cycle_off" | "plan_off" | "team_free"
+    readonly reason: "payments_off" | "channel_off" | "cycle_off" | "plan_off" | "team_free" | "auto_renewing"
   ) {
     super(reason);
   }
@@ -116,9 +116,12 @@ export async function startCheckout(
     input.billingCycle,
     founding
   );
-  const hasPlan = (await getUserSubscriptions(db, user.id)).some(
-    sub => sub.planCode === input.planCode
-  );
+  const plans = (await getUserSubscriptions(db, user.id)).filter(sub => sub.planCode === input.planCode);
+  const hasPlan = plans.length > 0;
+  // A plan that renews by itself is charged by the gateway. A second checkout would charge the buyer twice.
+  if (plans.some(sub => sub.providerSubscriptionRef && (sub.status === "active" || sub.status === "past_due"))) {
+    throw new CheckoutClosedError("auto_renewing");
+  }
   const invoiceNo = newInvoiceNo();
 
   await db.insert(payments).values({
@@ -154,7 +157,7 @@ export async function startCheckout(
 export async function startTeamCheckout(
   db: Db,
   user: Buyer,
-  workspace: { id: number; accessUntil: Date | null },
+  workspace: { id: number; accessUntil: Date | null; providerSubscriptionRef?: string | null },
   channel: PaymentChannel,
   origin: string
 ) {
@@ -163,6 +166,7 @@ export async function startTeamCheckout(
   if (!enabledChannels().includes(channel)) throw new CheckoutClosedError("channel_off");
   // A team with no end date is free for good. Charging it would buy nothing.
   if (workspace.accessUntil === null) throw new CheckoutClosedError("team_free");
+  if (workspace.providerSubscriptionRef) throw new CheckoutClosedError("auto_renewing");
 
   const account = await getOrCreateBillingAccount(db, user.id);
   const amountMinor = TEAMS_PLAN.priceMinor;

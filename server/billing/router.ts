@@ -55,6 +55,7 @@ const CLOSED_MESSAGES: Record<CheckoutClosedError["reason"], string> = {
   cycle_off: "Only monthly billing is available.",
   plan_off: "That plan is not available yet.",
   team_free: "This team has no end date, so there is nothing to pay.",
+  auto_renewing: "This plan renews by itself each month, so there is nothing to pay now.",
 };
 
 /** Turns a checkout failure into a message a buyer can read. Gateway wording stays in the log. */

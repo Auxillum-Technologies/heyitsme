@@ -332,6 +332,24 @@ describe("PayMongo auto-renewal", () => {
     expect((await userPayments(owner.id))[1]).toMatchObject({ purpose: "teams", status: "succeeded", providerInvoiceRef: "inv_2" });
   });
 
+  it("refuses a second checkout for a plan that already renews by itself, so nobody pays twice", async () => {
+    const { user, ref } = await mayaBuyer();
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_1") });
+    await deliver(subscriptionEvent(ref));
+    for (const channel of ["maya", "gcash"] as const) {
+      await expect(callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel })).rejects.toThrow(/renews by itself/);
+    }
+    expect(gateway.recurring).toHaveLength(1);
+
+    Object.assign(ENV, { teamsEnabled: true, teamsBillingEnabled: true });
+    const team = await callerFor(user).teams.create({ name: "Acme" });
+    const { invoiceNo } = await callerFor(user).billing.createTeamCheckout({ workspaceId: team.id, channel: "maya" });
+    const teamRef = (await paymentRow(invoiceNo)).providerCheckoutRef!;
+    gateway.subs.set(teamRef, { status: "active", latestInvoice: paidInvoice("inv_t1", 149900) });
+    await deliver(subscriptionEvent(teamRef));
+    await expect(callerFor(user).billing.createTeamCheckout({ workspaceId: team.id, channel: "gcash" })).rejects.toThrow(/renews by itself/);
+  });
+
   it("ignores a subscription heyitsme never opened", async () => {
     gateway.subs.set("subs_stranger", { status: "active", latestInvoice: paidInvoice("inv_9") });
     expect((await deliver(subscriptionEvent("subs_stranger"))).status).toBe(200);
