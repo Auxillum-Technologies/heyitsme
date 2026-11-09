@@ -116,6 +116,11 @@ type Offer = {
 export default function PlanCards({ plan, offer, onUpgrade }: { plan: PlanCode; offer: Offer; onUpgrade: () => void }) {
   const [, navigate] = useLocation();
   const [signup, setSignup] = useState(false);
+  // Maya can renew by itself once PayMongo Subscriptions is on. Every other method is renewed from this page.
+  const renewNote = (base: string) =>
+    offer.autoRenewChannels.length > 0
+      ? `${base.replace(/\.$/, "")}, or renewed each month by itself with ${offer.autoRenewChannels.map(channel => channelLabel(channel)).join(" or ")}.`
+      : `${base} Renew from this page.`;
   const { teams } = offer;
   const owned = trpc.billing.teamPlans.useQuery(undefined, { enabled: teams.enabled, retry: false });
   const current = <button type="button" className="outline-button" disabled>Your current plan</button>;
@@ -128,7 +133,7 @@ export default function PlanCards({ plan, offer, onUpgrade }: { plan: PlanCode; 
           {plan === "free" ? current : <button type="button" className="outline-button" disabled>Included in your plan</button>}
         </PlanCard>
 
-        <PlanCard name="Pro" headline="Make it yours" text="More cards, your own look, and every contact kept." price={formatPeso(offer.prices.pro.monthly)} per="/ month" featured={plan === "free"} features={PRO} fine="Paid one month at a time. Renew from this page. If it ends, nothing is deleted.">
+        <PlanCard name="Pro" headline="Make it yours" text="More cards, your own look, and every contact kept." price={formatPeso(offer.prices.pro.monthly)} per="/ month" featured={plan === "free"} features={PRO} fine={`${renewNote("Paid one month at a time.")} If it ends, nothing is deleted.`}>
           {plan === "pro" ? current : (
             <button type="button" className="glass-button glass-button-primary" onClick={onUpgrade}><Sparkles size={15} aria-hidden="true" /> Upgrade to Pro</button>
           )}
@@ -145,7 +150,7 @@ export default function PlanCards({ plan, offer, onUpgrade }: { plan: PlanCode; 
             featured={plan !== "free"}
             features={teamFeatures(teams.seats)}
             fine={teams.checkoutOpen
-              ? "Paid one month at a time by the team's owner. If it ends and is not renewed within 3 days, the team is put on hold until it is paid. Nothing is deleted."
+              ? `${renewNote("Paid one month at a time by the team's owner.")} If it ends and is not renewed within 3 days, the team is put on hold until it is paid. Nothing is deleted.`
               : "Paid sign-up for Teams is not open yet, so starting a team costs nothing today."}
           >
             {!teams.checkoutOpen ? (

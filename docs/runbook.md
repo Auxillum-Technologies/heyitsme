@@ -24,6 +24,7 @@ Free plan plus paid Pro (see `docs/billing.md`). Stack: React 19 + Vite 7 client
 | `TEAMS_BILLING_ENABLED` | optional | Sells the Teams plan at checkout. Default off: starting a team is free. On: every team is paid. Teams that already exist get 14 days of notice, then go on hold until paid. See `docs/billing.md`, Holds. |
 | `CRON_SECRET` | billing | Any long random string. Vercel Cron sends it to `/api/cron/plans` once a day (plan-ended emails, end dates for teams that were free). Empty: the run is refused. |
 | `PAYMENT_GATEWAY_MERCHANT_ID` / `PAYMENT_GATEWAY_SECRET`, `PAYMENT_PROVIDER_ENV` | payments | 2C2P credentials. Server only. |
+| `PAYMENT_PROVIDER`, `PAYMONGO_SECRET_KEY` / `PAYMONGO_WEBHOOK_SECRET`, `CARD_ENABLED`, `MAYA_ENABLED`, `QRPH_ENABLED`, `PAYMONGO_SUBSCRIPTIONS_ENABLED` | payments | PayMongo. Server only. Setup order in `docs/billing.md`, PayMongo. |
 | `COMPLIMENTARY_EMAILS` | optional | Google emails that keep every feature with no plan. |
 
 Wallet passes: not shipped; required credentials listed in `docs/wallet.md`.
