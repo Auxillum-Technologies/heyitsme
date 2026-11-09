@@ -2,12 +2,13 @@ import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { TEAMS_PLAN, planPriceMinor, type BillingCycle, type PaidPlanCode, type PaymentChannel,
 } from "@shared/plans";
-import { payments } from "../../drizzle/schema";
+import { billingAccounts, payments } from "../../drizzle/schema";
 import { ENV } from "../_core/env";
 import { logJson } from "../_core/seo";
 import { PaymentProviderError, type PaymentProvider } from "./provider";
 import { TEAM_PAYMENT_PURPOSE, getOrCreateBillingAccount, getUserSubscriptions, settlePayment, type Db, type SettleOutcome,
 } from "./service";
+import { PayMongoProvider } from "./paymongo";
 import { TwoC2PProvider } from "./twoc2p";
 
 let providerOverride: PaymentProvider | null = null;
@@ -19,6 +20,13 @@ export function setPaymentProvider(provider: PaymentProvider | null) {
 
 export function getPaymentProvider(): PaymentProvider {
   if (providerOverride) return providerOverride;
+  if (ENV.paymentProvider === "paymongo") {
+    return new PayMongoProvider({
+      secretKey: ENV.paymongoSecretKey,
+      webhookSecret: ENV.paymongoWebhookSecret,
+      mode: ENV.paymentProviderEnv === "production" ? "live" : "test",
+    });
+  }
   if (ENV.paymentProvider !== "2c2p") throw new PaymentProviderError(`Unknown payment provider ${ENV.paymentProvider}`,
       "not_configured"
     );
@@ -29,13 +37,28 @@ export function getPaymentProvider(): PaymentProvider {
   });
 }
 
-/** Channels a buyer can pick right now. Empty means checkout is closed. */
+/** Channels a buyer can pick right now, for the gateway in use. Empty means checkout is closed. */
 export function enabledChannels(): PaymentChannel[] {
   if (!ENV.paymentsEnabled) return [];
   const channels: PaymentChannel[] = [];
+  if (ENV.paymentProvider === "paymongo") {
+    if (ENV.gcashEnabled) channels.push("gcash");
+    if (ENV.qrphEnabled) channels.push("qrph");
+    if (ENV.mayaEnabled) channels.push("maya");
+    if (ENV.cardEnabled) channels.push("card");
+    return channels;
+  }
   if (ENV.googlePayEnabled) channels.push("googlepay");
   if (ENV.gcashEnabled) channels.push("gcash");
   return channels;
+}
+
+/**
+ * Channels whose plan renews by itself each month. Only Maya on PayMongo, once PayMongo has turned
+ * Subscriptions on. Every other channel buys one prepaid month and is renewed by hand.
+ */
+export function autoRenewChannels(): PaymentChannel[] {
+  return ENV.paymentProvider === "paymongo" && ENV.paymongoSubscriptionsEnabled && enabledChannels().includes("maya") ? ["maya"] : [];
 }
 
 /** Monthly needs a recurring charge. Without it only annual is sold, so nobody is promised a renewal we can't take. */
@@ -70,9 +93,11 @@ export type CheckoutInput = {
  * Quotes the price on the server, records a pending payment, then opens the gateway checkout.
  * The browser gets only a redirect URL. Nothing here grants access.
  */
+export type Buyer = { id: number; email?: string | null; name?: string | null };
+
 export async function startCheckout(
   db: Db,
-  user: { id: number },
+  user: Buyer,
   input: CheckoutInput,
   origin: string,
   now = new Date()
@@ -118,7 +143,7 @@ export async function startCheckout(
     amountMinor,
   });
 
-  const redirectUrl = await openGatewayCheckout(db, { invoiceNo, amountMinor, description: "heyitsme Pro (monthly)", channel: input.channel }, origin);
+  const redirectUrl = await openGatewayCheckout(db, account, user, { invoiceNo, amountMinor, description: "heyitsme Pro (monthly)", channel: input.channel }, origin);
   return { invoiceNo, redirectUrl, amountMinor, founding };
 }
 
@@ -128,7 +153,7 @@ export async function startCheckout(
  */
 export async function startTeamCheckout(
   db: Db,
-  user: { id: number },
+  user: Buyer,
   workspace: { id: number; accessUntil: Date | null },
   channel: PaymentChannel,
   origin: string
@@ -157,28 +182,44 @@ export async function startTeamCheckout(
     metadataJson: JSON.stringify({ workspaceId: workspace.id }),
   });
   logJson("info", "payment created", { invoiceNo, plan: "teams", cycle: "monthly", channel, amountMinor, workspaceId: workspace.id });
-  const redirectUrl = await openGatewayCheckout(db, { invoiceNo, amountMinor, description: "heyitsme Teams (monthly)", channel }, origin);
+  const redirectUrl = await openGatewayCheckout(db, account, user, { invoiceNo, amountMinor, description: "heyitsme Teams (monthly)", channel }, origin);
   return { invoiceNo, redirectUrl, amountMinor };
 }
 
-/** Opens the hosted page for a payment row that already exists, and marks the row pending or failed. */
+/**
+ * Opens the hosted page for a payment row that already exists, and marks the row pending or failed. An
+ * auto-renew channel opens a gateway subscription instead of a one-time checkout. What was opened is saved on
+ * the row, so the server can read it back from the gateway by its id.
+ */
 async function openGatewayCheckout(
   db: Db,
+  account: { id: number; providerCustomerRef: string | null },
+  user: Buyer,
   order: { invoiceNo: string; amountMinor: number; description: string; channel: PaymentChannel },
   origin: string
 ) {
   const { invoiceNo } = order;
   try {
-    const session = await getPaymentProvider().createCheckout({
+    const provider = getPaymentProvider();
+    const request = {
       ...order,
-      currency: "PHP",
-      frontendReturnUrl: `${origin}/api/payments/2c2p/return?invoice=${invoiceNo}`,
-      backendReturnUrl: `${origin}/api/payments/2c2p/callback`,
-    });
+      currency: "PHP" as const,
+      frontendReturnUrl: `${origin}/api/payments/${provider.name}/return?invoice=${invoiceNo}`,
+      backendReturnUrl: `${origin}/api/payments/${provider.name}/callback`,
+    };
+    const session = autoRenewChannels().includes(order.channel)
+      ? await provider.createRecurringSubscription({
+          ...request,
+          customer: { email: user.email ?? "", name: user.name ?? null, providerCustomerRef: account.providerCustomerRef },
+        })
+      : await provider.createCheckout(request);
     await db
       .update(payments)
-      .set({ status: "pending", updatedAt: new Date() })
+      .set({ status: "pending", providerCheckoutRef: session.providerToken || null, updatedAt: new Date() })
       .where(eq(payments.providerTransactionId, invoiceNo));
+    if (session.providerCustomerRef && session.providerCustomerRef !== account.providerCustomerRef) {
+      await db.update(billingAccounts).set({ providerCustomerRef: session.providerCustomerRef, updatedAt: new Date() }).where(eq(billingAccounts.id, account.id));
+    }
     return session.redirectUrl;
   } catch (error) {
     const code =
@@ -209,7 +250,8 @@ export async function reconcileInvoice(
   db: Db,
   invoiceNo: string
 ): Promise<SettleOutcome> {
-  const status = await getPaymentProvider().getPaymentStatus(invoiceNo);
+  const [row] = await db.select({ providerCheckoutRef: payments.providerCheckoutRef }).from(payments).where(eq(payments.providerTransactionId, invoiceNo)).limit(1);
+  const status = await getPaymentProvider().getPaymentStatus(invoiceNo, row?.providerCheckoutRef ?? null);
   const outcome = await settlePayment(db, status);
   logJson("info", "payment settled", {
     invoiceNo,

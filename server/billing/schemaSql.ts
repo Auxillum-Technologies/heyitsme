@@ -21,3 +21,12 @@ export const BILLING_SCHEMA_STATEMENTS: readonly string[] = [
   "alter table \"entitlementOverrides\" enable row level security",
   "alter table \"offerCounters\" enable row level security"
 ];
+
+// The statements of drizzle/0023_paymongo.sql (paymongoFlow.test.ts keeps the two equal). Each is safe to repeat.
+export const PAYMONGO_SCHEMA_STATEMENTS: readonly string[] = [
+  "alter table \"payments\" add column if not exists \"providerCheckoutRef\" varchar(128)",
+  "create index if not exists \"payments_provider_checkout_idx\" on \"payments\" (\"providerCheckoutRef\")",
+  "create index if not exists \"subscriptions_provider_subscription_idx\" on \"subscriptions\" (\"providerSubscriptionRef\")",
+  "alter table \"workspaces\" add column if not exists \"providerSubscriptionRef\" varchar(128)",
+  "create unique index if not exists \"workspaces_provider_subscription_idx\" on \"workspaces\" (\"providerSubscriptionRef\")"
+];
