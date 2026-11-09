@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "../_core/context";
-import { billingAccounts, payments, users } from "../../drizzle/schema";
+import { billingAccounts, payments, subscriptions, users, workspaces } from "../../drizzle/schema";
 import { ENV } from "../_core/env";
 import type { CheckoutRequest, PaymentProvider, PaymentResult, ProviderEvent, SubscriptionState } from "./provider";
 import { PAYMONGO_SCHEMA_STATEMENTS } from "./schemaSql";
@@ -19,6 +20,7 @@ vi.mock("../uploadSweep", () => ({ tidyOwnerUploads: vi.fn() }));
 const { appRouter } = await import("../routers");
 const { setTestDb } = await import("../db");
 const { enabledChannels, getPaymentProvider, setPaymentProvider } = await import("./checkout");
+const { createApp } = await import("../_core/app");
 
 /**
  * A PayMongo-shaped gateway. It records what billing asked it to open, and answers read backs from tables the
@@ -55,7 +57,9 @@ class FakePayMongo implements PaymentProvider {
   async verifyCallback() {
     return null;
   }
+  rawBodies: string[] = [];
   parseWebhook(rawBody: string, header: string | undefined): ProviderEvent | null {
+    this.rawBodies.push(rawBody);
     if (header !== "good") return null;
     return (JSON.parse(rawBody) as { event: ProviderEvent }).event;
   }
@@ -171,6 +175,164 @@ describe("PayMongo checkout", () => {
     await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "maya" });
     expect(gateway.recurring).toHaveLength(0);
     expect(gateway.checkouts[0].channel).toBe("maya");
+  });
+});
+
+/** Posts to the webhook through the whole Express app, the way PayMongo delivers it. */
+async function deliver(body: string, signature = "good") {
+  const server = createApp().listen(0);
+  try {
+    const { port } = server.address() as AddressInfo;
+    const res = await fetch(`http://127.0.0.1:${port}/api/payments/paymongo/webhook`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Paymongo-Signature": signature },
+      body,
+    });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  } finally {
+    server.close();
+  }
+}
+
+describe("PayMongo webhook route", () => {
+  it("checks the signature over the exact bytes PayMongo sent", async () => {
+    const body = '{ "event" : {"kind":"ignored","type":"payment.paid"},  "pad": "\u00e9" }';
+    const res = await deliver(body);
+    expect(res).toEqual({ status: 200, body: { received: true } });
+    expect(gateway.rawBodies).toEqual([body]);
+  });
+
+  it("refuses an unsigned delivery", async () => {
+    const res = await deliver(JSON.stringify({ event: { kind: "checkout", ref: "cs_1" } }), "forged");
+    expect(res.status).toBe(400);
+  });
+
+  it("answers 200 to a signed event it does not act on, so PayMongo stops retrying", async () => {
+    const res = await deliver(JSON.stringify({ event: { kind: "checkout", ref: "cs_unknown" } }));
+    expect(res).toEqual({ status: 200, body: { received: true } });
+  });
+});
+
+const sessionPaid = (amountMinor = 29900) => ({ status: "succeeded" as const, amountMinor, currency: "PHP", providerRef: "pay_1", channelCode: "gcash", code: "paid" });
+const checkoutEvent = (ref: string) => JSON.stringify({ event: { kind: "checkout", ref } });
+
+describe("PayMongo one-time settlement", () => {
+  it("GCash: a paid session read back from PayMongo turns on Pro for one month, once", async () => {
+    const user = await makeUser();
+    const { invoiceNo } = await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "gcash" });
+    const ref = (await paymentRow(invoiceNo)).providerCheckoutRef!;
+
+    // The event alone grants nothing: PayMongo still says the session is open.
+    expect((await deliver(checkoutEvent(ref))).status).toBe(200);
+    expect((await callerFor(user).billing.me()).entitlements.plan).toBe("free");
+
+    gateway.sessions.set(ref, sessionPaid());
+    expect((await deliver(checkoutEvent(ref))).status).toBe(200);
+    const me = await callerFor(user).billing.me();
+    expect(me.entitlements.plan).toBe("pro");
+    expect(await paymentRow(invoiceNo)).toMatchObject({ status: "succeeded", providerInvoiceRef: "pay_1" });
+
+    const end = me.subscription?.currentPeriodEnd;
+    await deliver(checkoutEvent(ref));
+    expect((await callerFor(user).billing.me()).subscription?.currentPeriodEnd).toEqual(end);
+  });
+
+  it("refuses a paid amount that is not the server's quote", async () => {
+    const user = await makeUser();
+    const { invoiceNo } = await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "qrph" });
+    const ref = (await paymentRow(invoiceNo)).providerCheckoutRef!;
+    gateway.sessions.set(ref, sessionPaid(100));
+    await deliver(checkoutEvent(ref));
+    expect((await callerFor(user).billing.me()).entitlements.plan).toBe("free");
+    expect(await paymentRow(invoiceNo)).toMatchObject({ status: "failed", failureCode: "amount_mismatch" });
+  });
+});
+
+const subscriptionEvent = (ref: string) => JSON.stringify({ event: { kind: "subscription", ref } });
+const paidInvoice = (ref: string, amountMinor = 29900) => ({ ref, paid: true, amountMinor, currency: "PHP" });
+const DAY = 86_400_000;
+const userPayments = async (userId: number) => db.select().from(payments).where(eq(payments.userId, userId)).orderBy(payments.id);
+const proRow = async (userId: number) => {
+  const [account] = await db.select().from(billingAccounts).where(eq(billingAccounts.ownerUserId, userId));
+  return (await db.select().from(subscriptions).where(eq(subscriptions.billingAccountId, account.id)))[0];
+};
+
+describe("PayMongo auto-renewal", () => {
+  async function mayaBuyer() {
+    const user = await makeUser();
+    const { invoiceNo } = await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "maya" });
+    const ref = (await paymentRow(invoiceNo)).providerCheckoutRef!;
+    return { user, invoiceNo, ref };
+  }
+
+  it("settles the first Maya payment from the subscription PayMongo reports, and links the plan to it", async () => {
+    const { user, invoiceNo, ref } = await mayaBuyer();
+    gateway.subs.set(ref, { status: "incomplete", latestInvoice: { ...paidInvoice("inv_1"), paid: false } });
+    await deliver(subscriptionEvent(ref));
+    expect((await callerFor(user).billing.me()).entitlements.plan).toBe("free");
+
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_1") });
+    expect((await deliver(subscriptionEvent(ref))).status).toBe(200);
+    expect((await callerFor(user).billing.me()).entitlements.plan).toBe("pro");
+    expect(await paymentRow(invoiceNo)).toMatchObject({ status: "succeeded", providerInvoiceRef: "inv_1" });
+    expect(await proRow(user.id)).toMatchObject({ status: "active", providerSubscriptionRef: ref });
+  });
+
+  it("records each paid renewal invoice as one renewal payment and moves the plan end one month, once", async () => {
+    const { user, ref } = await mayaBuyer();
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_1") });
+    await deliver(subscriptionEvent(ref));
+    const firstEnd = (await proRow(user.id)).currentPeriodEnd;
+
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_2") });
+    await deliver(subscriptionEvent(ref));
+    await deliver(subscriptionEvent(ref));
+
+    const rows = await userPayments(user.id);
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({ purpose: "renewal", provider: "paymongo", channel: "maya", status: "succeeded", amountMinor: 29900, providerInvoiceRef: "inv_2", providerCheckoutRef: ref });
+    const days = ((await proRow(user.id)).currentPeriodEnd.getTime() - firstEnd.getTime()) / DAY;
+    expect(days).toBeGreaterThanOrEqual(28);
+    expect(days).toBeLessThanOrEqual(31);
+  });
+
+  it("refuses a renewal invoice for another amount", async () => {
+    const { user, ref } = await mayaBuyer();
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_1") });
+    await deliver(subscriptionEvent(ref));
+    const firstEnd = (await proRow(user.id)).currentPeriodEnd;
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_2", 100) });
+    await deliver(subscriptionEvent(ref));
+    expect((await userPayments(user.id))[1]).toMatchObject({ status: "failed", failureCode: "amount_mismatch" });
+    expect((await proRow(user.id)).currentPeriodEnd).toEqual(firstEnd);
+  });
+
+  it("renews a team paid by Maya, and moves its plan date one month each time", async () => {
+    Object.assign(ENV, { teamsEnabled: true, teamsBillingEnabled: true });
+    const owner = await makeUser();
+    const team = await callerFor(owner).teams.create({ name: "Acme" });
+    const { invoiceNo } = await callerFor(owner).billing.createTeamCheckout({ workspaceId: team.id, channel: "maya" });
+    const ref = (await paymentRow(invoiceNo)).providerCheckoutRef!;
+    expect(gateway.recurring[0]).toMatchObject({ amountMinor: 149900, customer: { email: owner.email } });
+
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_1", 149900) });
+    await deliver(subscriptionEvent(ref));
+    const [paidTeam] = await db.select().from(workspaces).where(eq(workspaces.id, team.id));
+    expect(paidTeam.providerSubscriptionRef).toBe(ref);
+
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_2", 149900) });
+    await deliver(subscriptionEvent(ref));
+    const [renewed] = await db.select().from(workspaces).where(eq(workspaces.id, team.id));
+    const days = (renewed.accessUntil!.getTime() - paidTeam.accessUntil!.getTime()) / DAY;
+    expect(days).toBeGreaterThanOrEqual(28);
+    expect(days).toBeLessThanOrEqual(31);
+    expect((await userPayments(owner.id))[1]).toMatchObject({ purpose: "teams", status: "succeeded", providerInvoiceRef: "inv_2" });
+  });
+
+  it("ignores a subscription heyitsme never opened", async () => {
+    gateway.subs.set("subs_stranger", { status: "active", latestInvoice: paidInvoice("inv_9") });
+    expect((await deliver(subscriptionEvent("subs_stranger"))).status).toBe(200);
+    expect(await db.select().from(payments)).toHaveLength(0);
   });
 });
 

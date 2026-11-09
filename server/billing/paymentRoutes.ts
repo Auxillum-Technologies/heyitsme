@@ -71,6 +71,7 @@ export function registerPaymentRoutes(app: Express) {
   app.post("/api/payments/2c2p/callback", handleCallback);
   app.get("/api/payments/2c2p/return", handleReturn);
   app.post("/api/payments/2c2p/return", handleReturn);
+  app.get("/api/payments/paymongo/return", handleReturn);
 }
 
 export const _test = { handleCallback, handleReturn };
