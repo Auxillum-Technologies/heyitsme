@@ -22,6 +22,8 @@ const { setTestDb } = await import("../db");
 const { enabledChannels, getPaymentProvider, setPaymentProvider } = await import("./checkout");
 const { createApp } = await import("../_core/app");
 const { getUserEntitlements } = await import("./service");
+const { runPlanCron } = await import("./planCron");
+const { sendMail } = await import("../_core/mail");
 
 /**
  * A PayMongo-shaped gateway. It records what billing asked it to open, and answers read backs from tables the
@@ -428,6 +430,77 @@ describe("cancel and resume", () => {
     await callerFor(user).billing.cancelSubscription();
     await callerFor(user).billing.resumeSubscription();
     expect(await proRow(user.id)).toMatchObject({ status: "active", cancelAtPeriodEnd: false, providerSubscriptionRef: null });
+  });
+});
+
+describe("renewal reminder", () => {
+  const ORIGIN = "https://heyitsme.test";
+  async function paidPro(channel: "gcash" | "qrph" | "card" | "maya") {
+    const user = await makeUser();
+    const { invoiceNo } = await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel });
+    const ref = (await paymentRow(invoiceNo)).providerCheckoutRef!;
+    if (ref.startsWith("subs_")) {
+      gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice(`inv_${ref}`) });
+      await deliver(subscriptionEvent(ref));
+    } else {
+      gateway.sessions.set(ref, { ...sessionPaid(), providerRef: `pay_${ref}` });
+      await deliver(checkoutEvent(ref));
+    }
+    return { user, end: (await proRow(user.id)).currentPeriodEnd };
+  }
+  const mailsTo = (email: string | null) => vi.mocked(sendMail).mock.calls.filter(([message]) => message.to === email).map(([message]) => message);
+
+  beforeEach(() => vi.mocked(sendMail).mockClear());
+
+  it("reminds a buyer who renews by hand, once, a few days before the plan ends", async () => {
+    const { user, end } = await paidPro("gcash");
+    vi.mocked(sendMail).mockClear();
+    const at = new Date(end.getTime() - 2 * DAY);
+    expect((await runPlanCron(db, ORIGIN, at)).renewalReminders).toBe(1);
+    expect(mailsTo(user.email)).toEqual([
+      expect.objectContaining({ subject: "Your heyitsme Pro plan ends soon", text: expect.stringContaining(`${ORIGIN}/app/billing`) }),
+    ]);
+    expect((await runPlanCron(db, ORIGIN, new Date(at.getTime() + DAY))).renewalReminders).toBe(0);
+    expect(mailsTo(user.email)).toHaveLength(1);
+  });
+
+  it("does not remind too early, a plan that renews by itself, or a plan the buyer canceled", async () => {
+    const { end } = await paidPro("qrph");
+    expect((await runPlanCron(db, ORIGIN, new Date(end.getTime() - 5 * DAY))).renewalReminders).toBe(0);
+    const maya = await paidPro("maya");
+    const canceled = await paidPro("card");
+    await callerFor(canceled.user).billing.cancelSubscription();
+    vi.mocked(sendMail).mockClear();
+    await runPlanCron(db, ORIGIN, new Date(maya.end.getTime() - 2 * DAY));
+    expect(mailsTo(maya.user.email)).toHaveLength(0);
+    expect(mailsTo(canceled.user.email)).toHaveLength(0);
+  });
+
+  it("reminds the owner of a team paid by GCash, not one paid by Maya", async () => {
+    Object.assign(ENV, { teamsEnabled: true, teamsBillingEnabled: true });
+    const teams = [];
+    for (const channel of ["gcash", "maya"] as const) {
+      const owner = await makeUser();
+      const team = await callerFor(owner).teams.create({ name: `Team ${channel}` });
+      const { invoiceNo } = await callerFor(owner).billing.createTeamCheckout({ workspaceId: team.id, channel });
+      const ref = (await paymentRow(invoiceNo)).providerCheckoutRef!;
+      if (ref.startsWith("subs_")) {
+        gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice(`inv_${ref}`, 149900) });
+        await deliver(subscriptionEvent(ref));
+      } else {
+        gateway.sessions.set(ref, { ...sessionPaid(149900), providerRef: `pay_${ref}` });
+        await deliver(checkoutEvent(ref));
+      }
+      const [row] = await db.select().from(workspaces).where(eq(workspaces.id, team.id));
+      teams.push({ owner, row });
+    }
+    vi.mocked(sendMail).mockClear();
+    const at = new Date(teams[0].row.accessUntil!.getTime() - 2 * DAY);
+    expect((await runPlanCron(db, ORIGIN, at)).renewalReminders).toBe(1);
+    expect(mailsTo(teams[0].owner.email)).toEqual([
+      expect.objectContaining({ subject: "Team gcash: your heyitsme Teams plan ends soon", text: expect.stringContaining(`${ORIGIN}/app/team/${teams[0].row.id}`) }),
+    ]);
+    expect(mailsTo(teams[1].owner.email)).toHaveLength(0);
   });
 });
 

@@ -48,6 +48,32 @@ export function proEndedMail(input: { to: string; holdFrom: Date; billingUrl: st
   ]);
 }
 
+/** Sent once a few days before a Pro plan that is renewed by hand (GCash, QR Ph, card) ends. */
+export function proRenewalDueMail(input: { to: string; endsAt: Date; holdFrom: Date; billingUrl: string }): MailMessage {
+  return plain(input.to, "Your heyitsme Pro plan ends soon", [
+    `Your heyitsme Pro plan ends on ${dateText(input.endsAt)}. It does not renew by itself.`,
+    "",
+    `To keep Pro, pay for the next month on your Billing page. If it is not renewed by ${dateText(input.holdFrom)}, every card that still uses a Pro feature is paused.`,
+    "",
+    "Nothing is deleted. Paying brings everything back as it was.",
+    "",
+    `Renew now: ${input.billingUrl}`,
+  ]);
+}
+
+/** Sent once a few days before a team's plan that is renewed by hand ends. */
+export function teamRenewalDueMail(input: { to: string; teamName: string; endsAt: Date; holdFrom: Date; teamUrl: string }): MailMessage {
+  return plain(input.to, `${input.teamName}: your heyitsme Teams plan ends soon`, [
+    `The plan for your team, ${input.teamName}, ends on ${dateText(input.endsAt)}. It does not renew by itself.`,
+    "",
+    `To keep the team running, pay for the next month on the team's Billing tab. If it is not renewed by ${dateText(input.holdFrom)}, the team is put on hold: its company cards, event pages and review pages are paused.`,
+    "",
+    "Nothing is deleted. Paying brings everything back as it was.",
+    "",
+    `Open your team: ${input.teamUrl}`,
+  ]);
+}
+
 /** Sent after a verified payment for a team's plan. */
 export function teamPaymentSucceededMail(input: { to: string; periodEnd: Date; teamUrl: string }): MailMessage {
   const lines = [
