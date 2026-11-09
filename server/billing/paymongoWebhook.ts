@@ -1,12 +1,12 @@
 import express, { type Express, type Request, type Response } from "express";
-import { and, asc, eq, isNull, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { payments, subscriptions, workspaces } from "../../drizzle/schema";
 import { clientIp, hashIdentifier, rateLimit } from "../_core/rateLimit";
 import { logJson, siteOrigin } from "../_core/seo";
 import { getDb } from "../db";
 import { getPaymentProvider, newInvoiceNo, reconcileInvoice } from "./checkout";
 import { notifyActivation } from "./paymentRoutes";
-import type { PaymentProvider, PaymentResult } from "./provider";
+import type { PaymentProvider, PaymentResult, SubscriptionState } from "./provider";
 import { settlePayment, type Db, type SettleOutcome } from "./service";
 
 // PayMongo webhooks. The signature covers the raw bytes, so this route reads the body itself and must be
@@ -38,8 +38,30 @@ async function linkSubscription(db: Db, outcome: SettleOutcome, providerSubscrip
 }
 
 /**
- * Reads one subscription back from the gateway and settles its latest paid invoice. The first invoice settles
- * the payment row checkout opened. A later one becomes a new `payments` row (purpose `renewal`, or `teams` for
+ * The plan follows what PayMongo reports (D3). Past due keeps Pro for PAST_DUE_GRACE_DAYS after the plan end.
+ * Unpaid, after PayMongo's last retry, ends it now. A cancel made at PayMongo keeps the paid month. Only a paid
+ * invoice makes a lapsed plan active again (settlePayment), so an "active" report only clears past due.
+ */
+async function applySubscriptionStatus(db: Db, providerSubscriptionRef: string, status: SubscriptionState["status"]) {
+  const now = new Date();
+  const mine = eq(subscriptions.providerSubscriptionRef, providerSubscriptionRef);
+  if (status === "past_due") {
+    await db.update(subscriptions).set({ status: "past_due", updatedAt: now }).where(and(mine, eq(subscriptions.status, "active")));
+  } else if (status === "unpaid") {
+    await db.update(subscriptions).set({ status: "expired", updatedAt: now }).where(and(mine, inArray(subscriptions.status, ["active", "past_due"])));
+  } else if (status === "canceled") {
+    await db
+      .update(subscriptions)
+      .set({ status: "canceled", cancelAtPeriodEnd: true, canceledAt: now, updatedAt: now })
+      .where(and(mine, inArray(subscriptions.status, ["active", "past_due"])));
+  } else if (status === "active") {
+    await db.update(subscriptions).set({ status: "active", updatedAt: now }).where(and(mine, eq(subscriptions.status, "past_due")));
+  }
+}
+
+/**
+ * Reads one subscription back from the gateway, settles its latest paid invoice, then applies its status.
+ * The first invoice settles the payment row checkout opened. A later one becomes a new `payments` row (purpose `renewal`, or `teams` for
  * a team) copied from that first row, so the price and the plan are the ones the buyer agreed to. The invoice id
  * is unique on `payments.providerInvoiceRef`, so a repeated delivery finds its row and changes nothing.
  */
@@ -56,8 +78,17 @@ export async function reconcileSubscription(db: Db, provider: PaymentProvider, p
     return null;
   }
   const state = await provider.getSubscription(providerSubscriptionRef);
-  const invoice = state.latestInvoice;
-  if (!invoice?.paid) return null;
+  const outcome = state.latestInvoice?.paid ? await settleLatestInvoice(db, first, providerSubscriptionRef, state.latestInvoice) : null;
+  await applySubscriptionStatus(db, providerSubscriptionRef, state.status);
+  return outcome;
+}
+
+async function settleLatestInvoice(
+  db: Db,
+  first: typeof payments.$inferSelect,
+  providerSubscriptionRef: string,
+  invoice: NonNullable<SubscriptionState["latestInvoice"]>
+): Promise<SettleOutcome | null> {
   const result = (invoiceNo: string): PaymentResult => ({
     invoiceNo,
     status: "succeeded",

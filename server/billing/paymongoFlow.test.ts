@@ -21,6 +21,7 @@ const { appRouter } = await import("../routers");
 const { setTestDb } = await import("../db");
 const { enabledChannels, getPaymentProvider, setPaymentProvider } = await import("./checkout");
 const { createApp } = await import("../_core/app");
+const { getUserEntitlements } = await import("./service");
 
 /**
  * A PayMongo-shaped gateway. It records what billing asked it to open, and answers read backs from tables the
@@ -333,6 +334,56 @@ describe("PayMongo auto-renewal", () => {
     gateway.subs.set("subs_stranger", { status: "active", latestInvoice: paidInvoice("inv_9") });
     expect((await deliver(subscriptionEvent("subs_stranger"))).status).toBe(200);
     expect(await db.select().from(payments)).toHaveLength(0);
+  });
+});
+
+describe("PayMongo subscription status", () => {
+  async function activeMaya() {
+    const user = await makeUser();
+    const { invoiceNo } = await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "maya" });
+    const ref = (await paymentRow(invoiceNo)).providerCheckoutRef!;
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_1") });
+    await deliver(subscriptionEvent(ref));
+    return { user, ref, end: (await proRow(user.id)).currentPeriodEnd };
+  }
+  const planAt = async (user: typeof users.$inferSelect, at: Date) => (await getUserEntitlements(db, user, at)).plan;
+  const failedRenewal = { ...paidInvoice("inv_2"), paid: false };
+
+  it("past due: Pro stays for the 3 days of grace after the plan end, then ends", async () => {
+    const { user, ref, end } = await activeMaya();
+    gateway.subs.set(ref, { status: "past_due", latestInvoice: failedRenewal });
+    await deliver(subscriptionEvent(ref));
+    expect((await proRow(user.id)).status).toBe("past_due");
+    expect(await planAt(user, new Date(end.getTime() + 2 * DAY))).toBe("pro");
+    expect(await planAt(user, new Date(end.getTime() + 4 * DAY))).toBe("free");
+  });
+
+  it("a renewal paid after past due makes the plan active again and moves its end", async () => {
+    const { user, ref, end } = await activeMaya();
+    gateway.subs.set(ref, { status: "past_due", latestInvoice: failedRenewal });
+    await deliver(subscriptionEvent(ref));
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_2") });
+    await deliver(subscriptionEvent(ref));
+    const row = await proRow(user.id);
+    expect(row.status).toBe("active");
+    expect(row.currentPeriodEnd.getTime()).toBeGreaterThan(end.getTime() + 27 * DAY);
+  });
+
+  it("unpaid after PayMongo's retries: Pro ends now", async () => {
+    const { user, ref } = await activeMaya();
+    gateway.subs.set(ref, { status: "unpaid", latestInvoice: failedRenewal });
+    await deliver(subscriptionEvent(ref));
+    expect((await proRow(user.id)).status).toBe("expired");
+    expect((await callerFor(user).billing.me()).entitlements.plan).toBe("free");
+  });
+
+  it("cancelled at PayMongo: Pro runs to the end of the paid month, then stops", async () => {
+    const { user, ref, end } = await activeMaya();
+    gateway.subs.set(ref, { status: "canceled", latestInvoice: paidInvoice("inv_1") });
+    await deliver(subscriptionEvent(ref));
+    expect(await proRow(user.id)).toMatchObject({ status: "canceled", cancelAtPeriodEnd: true });
+    expect(await planAt(user, new Date(end.getTime() - DAY))).toBe("pro");
+    expect(await planAt(user, new Date(end.getTime() + DAY))).toBe("free");
   });
 });
 
