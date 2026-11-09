@@ -446,7 +446,7 @@ function Billing({ workspaceId }: { workspaceId: number }) {
     <p>{seats.active} active, {seats.invited} invited, {seats.suspended} suspended. Each of them holds a seat. Removing a person or cancelling an invitation frees it.</p>
     {seats.used > seats.allowed ? <p role="status"><strong>This team has more people than seats.</strong> Nobody is removed, but new invitations wait until there is a free seat.</p> : null}
     <p>{state === "unpaid" ? "This team is not paid for yet." : ended ? `The plan ended on ${day(accessUntil)}.` : accessUntil ? `The plan runs until ${day(accessUntil)}.` : "This team has no end date."}</p>
-    {renewsAutomatically && state === "active" ? <StopAutoRenew workspaceId={workspaceId} accessUntil={accessUntil} />
+    {renewsAutomatically ? <StopAutoRenew workspaceId={workspaceId} accessUntil={accessUntil} ended={ended} />
       : state === "free" ? <p className="gr-attribution">This team has no end date, so there is nothing to pay here. To change the number of seats, contact heyitsme.</p>
       : plan.checkoutOpen ? <>
         <p>Teams is {price} for each team, with {plan.seats} seats. {state === "active" ? "Paying now adds one month after the date above." : "Paying opens the team for one month from today."} If the plan runs out and is not renewed within {HOLD_GRACE_DAYS} days, the team is put on hold until it is paid. Nothing is deleted.</p>
@@ -457,7 +457,7 @@ function Billing({ workspaceId }: { workspaceId: number }) {
 }
 
 /** The owner stops a plan that renews by itself. The team keeps its plan date and is renewed by hand after that. */
-function StopAutoRenew({ workspaceId, accessUntil }: { workspaceId: number; accessUntil: Date | string | null }) {
+function StopAutoRenew({ workspaceId, accessUntil, ended }: { workspaceId: number; accessUntil: Date | string | null; ended: boolean }) {
   const utils = trpc.useUtils();
   const stop = trpc.billing.cancelTeamSubscription.useMutation();
   const onStop = async () => {
@@ -468,7 +468,9 @@ function StopAutoRenew({ workspaceId, accessUntil }: { workspaceId: number; acce
     } catch { /* The error shows under the button. */ }
   };
   return <>
-    <p className="gr-attribution">This plan renews by itself with Maya on {day(accessUntil)}. Stop auto-renewal before then to stop the next payment.</p>
+    <p className="gr-attribution">{ended
+      ? "The Maya renewal payment did not go through, and the payment provider tries it again each day. Stop auto-renewal to stop these tries and pay another way."
+      : `This plan renews by itself with Maya on ${day(accessUntil)}. Stop auto-renewal before then to stop the next payment.`}</p>
     <div className="gr-actions"><button type="button" className="gr-secondary" disabled={stop.isPending} onClick={() => void onStop()}>{stop.isPending ? "Stopping..." : "Stop auto-renewal"}</button></div>
     {stop.error ? <p role="alert" className="gr-error">{stop.error.message}</p> : null}
   </>;
