@@ -649,6 +649,24 @@ describe("renewal reminder", () => {
     expect(mailsTo(user.email)).toHaveLength(1);
   });
 
+  it("the activation mail promises a reminder only to a buyer who renews by hand", async () => {
+    const activationMails = (email: string | null) => mailsTo(email).filter(message => message.subject === "Your heyitsme Pro plan is active");
+    const gcash = await paidPro("gcash");
+    expect(activationMails(gcash.user.email)).toEqual([expect.objectContaining({ text: expect.stringContaining("We will remind you before then.") })]);
+
+    const maya = await paidPro("maya");
+    const ref = (await proRow(maya.user.id)).providerSubscriptionRef!;
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice(`inv_renew_${ref}`) });
+    await deliver(subscriptionEvent(ref));
+    const mayaMails = activationMails(maya.user.email);
+    expect(mayaMails).toHaveLength(2);
+    for (const message of mayaMails) {
+      expect(message.text).toContain("renews by itself each month with Maya");
+      expect(message.text).toContain("cancel from Billing");
+      expect(message.text).not.toMatch(/remind/i);
+    }
+  });
+
   it("does not remind too early, a plan that renews by itself, or a plan the buyer canceled", async () => {
     const { end } = await paidPro("qrph");
     expect((await runPlanCron(db, ORIGIN, new Date(end.getTime() - 5 * DAY))).renewalReminders).toBe(0);

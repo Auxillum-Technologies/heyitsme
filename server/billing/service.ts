@@ -275,6 +275,8 @@ export type SettleOutcome =
       subscriptionId: number;
       foundingMemberNumber: number | null;
       periodEnd: Date;
+      /** The plan has a gateway subscription, so the gateway charges each month and no reminder is sent. */
+      renewsAutomatically: boolean;
     };
 
 /**
@@ -403,6 +405,7 @@ export async function settlePayment(
         current.currentPeriodEnd > now ? current.currentPeriodEnd : now,
         cycle
       );
+      const providerSubscriptionRef = result.providerSubscriptionRef ?? (current.cancelAtPeriodEnd ? null : current.providerSubscriptionRef);
       await tx
         .update(subscriptions)
         .set({
@@ -414,7 +417,7 @@ export async function settlePayment(
           canceledAt: null,
           foundingMember: founding,
           foundingMemberNumber: foundingNumber,
-          providerSubscriptionRef: result.providerSubscriptionRef ?? (current.cancelAtPeriodEnd ? null : current.providerSubscriptionRef),
+          providerSubscriptionRef,
           updatedAt: now,
         })
         .where(eq(subscriptions.id, current.id));
@@ -424,6 +427,7 @@ export async function settlePayment(
         subscriptionId: current.id,
         foundingMemberNumber: foundingNumber,
         periodEnd,
+        renewsAutomatically: providerSubscriptionRef !== null,
       } as const;
     }
 
@@ -450,6 +454,7 @@ export async function settlePayment(
       subscriptionId: created.id,
       foundingMemberNumber: foundingNumber,
       periodEnd,
+      renewsAutomatically: Boolean(result.providerSubscriptionRef),
     } as const;
   });
 }

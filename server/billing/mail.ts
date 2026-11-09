@@ -92,11 +92,13 @@ export function teamPaymentSucceededMail(input: { to: string; periodEnd: Date; t
 }
 
 /** Sent after a verified payment. No amounts beyond the plan, no payment details. */
-export function paymentSucceededMail(input: { to: string; periodEnd: Date; foundingNumber: number | null; billingUrl: string }): MailMessage {
+export function paymentSucceededMail(input: { to: string; periodEnd: Date; foundingNumber: number | null; billingUrl: string; renewsAutomatically: boolean }): MailMessage {
   const lines = [
     "Your payment went through. heyitsme Pro is on.",
     "",
-    `Pro stays active until ${dateText(input.periodEnd)}. We will remind you before then.`,
+    input.renewsAutomatically
+      ? `Your plan renews by itself each month with Maya. The next payment is on ${dateText(input.periodEnd)}. To stop it, cancel from Billing before then.`
+      : `Pro stays active until ${dateText(input.periodEnd)}. We will remind you before then.`,
   ];
   if (input.foundingNumber !== null) lines.push(`You are Founding Member #${input.foundingNumber}. Your founding price holds while your plan stays active.`);
   lines.push("", `See your plan and receipts: ${input.billingUrl}`);

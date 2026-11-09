@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { useBilling, type UpgradeReason } from "@/lib/billing";
 import { trpc } from "@/lib/trpc";
+import { upgradeFootnote } from "@/lib/upgradeFootnote";
 import type { PaymentChannel } from "@shared/plans";
 import { channelLabel } from "./TeamPay";
 import { useState } from "react";
@@ -95,10 +96,7 @@ export default function UpgradeDialog({
         {isAuthenticated && !billing.data?.checkoutOpen ? (
           <p role="status">Checkout is not open yet.</p>
         ) : (
-          <p>
-            Your monthly access starts after payment verification. Renew from
-            Billing before it ends.
-          </p>
+          <p>{upgradeFootnote(selected, billing.data?.autoRenewChannels ?? [])}</p>
         )}
         {checkout.error ? <p role="alert">{checkout.error.message}</p> : null}
         {billing.isError ? (
