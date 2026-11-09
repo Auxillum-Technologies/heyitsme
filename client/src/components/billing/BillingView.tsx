@@ -192,6 +192,8 @@ export default function BillingView() {
               <p className="billing-meta">
                 {subscription.cancelAtPeriodEnd
                   ? `Canceled. Pro stays on until ${dateText(subscription.currentPeriodEnd)}, then your account moves to Free. Three days later, cards that still use a Pro feature are paused. Nothing is deleted.`
+                  : subscription.renewsAutomatically && subscription.status === "past_due"
+                    ? "The Maya renewal payment did not go through, and the payment provider tries it again each day. Cancel to stop these tries."
                   : subscription.renewsAutomatically
                     ? `Renews by itself on ${dateText(subscription.currentPeriodEnd)}. Cancel before then to stop the next payment.`
                     : `Paid through ${dateText(subscription.currentPeriodEnd)}. We'll remind you before it ends.`}

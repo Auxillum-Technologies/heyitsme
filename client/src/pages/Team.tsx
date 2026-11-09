@@ -463,7 +463,9 @@ function StopAutoRenew({ workspaceId, accessUntil, ended }: { workspaceId: numbe
   const onStop = async () => {
     try {
       const result = await stop.mutateAsync({ workspaceId });
-      toast.success(`Auto-renewal is off. The team stays paid until ${day(result.accessUntil)}. Renew by hand before then to keep it open.`);
+      toast.success(ended
+        ? `Auto-renewal is off. The plan ended on ${day(result.accessUntil)}. Pay by hand now to keep the team open.`
+        : `Auto-renewal is off. The team stays paid until ${day(result.accessUntil)}. Renew by hand before then to keep it open.`);
       await Promise.all([utils.teams.billing.invalidate({ workspaceId }), utils.billing.teamPlans.invalidate()]);
     } catch { /* The error shows under the button. */ }
   };

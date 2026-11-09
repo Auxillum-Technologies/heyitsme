@@ -542,6 +542,29 @@ describe("cancel and resume", () => {
   });
 });
 
+describe("renew by hand after a cancel", () => {
+  it("a Maya plan canceled and then paid with GCash renews by hand: a reminder, and the next checkout opens", async () => {
+    const user = await makeUser();
+    const maya = await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "maya" });
+    const ref = (await paymentRow(maya.invoiceNo)).providerCheckoutRef!;
+    gateway.subs.set(ref, { status: "active", latestInvoice: paidInvoice("inv_1") });
+    await deliver(subscriptionEvent(ref));
+    await callerFor(user).billing.cancelSubscription();
+
+    const gcash = await callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "gcash" });
+    const session = (await paymentRow(gcash.invoiceNo)).providerCheckoutRef!;
+    gateway.sessions.set(session, { ...sessionPaid(), providerRef: "pay_renew" });
+    await deliver(checkoutEvent(session));
+
+    const me = await callerFor(user).billing.me();
+    expect(me.subscription).toMatchObject({ status: "active", cancelAtPeriodEnd: false, renewsAutomatically: false });
+    vi.mocked(sendMail).mockClear();
+    const at = new Date(me.subscription!.currentPeriodEnd.getTime() - 2 * DAY);
+    expect((await runPlanCron(db, "https://heyitsme.test", at)).renewalReminders).toBe(1);
+    await expect(callerFor(user).billing.createCheckout({ planCode: "pro", billingCycle: "monthly", channel: "gcash" })).resolves.toMatchObject({ redirectUrl: expect.any(String) });
+  });
+});
+
 describe("renewal reminder", () => {
   const ORIGIN = "https://heyitsme.test";
   async function paidPro(channel: "gcash" | "qrph" | "card" | "maya") {

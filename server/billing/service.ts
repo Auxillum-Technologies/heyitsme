@@ -414,7 +414,7 @@ export async function settlePayment(
           canceledAt: null,
           foundingMember: founding,
           foundingMemberNumber: foundingNumber,
-          ...(result.providerSubscriptionRef ? { providerSubscriptionRef: result.providerSubscriptionRef } : {}),
+          providerSubscriptionRef: result.providerSubscriptionRef ?? (current.cancelAtPeriodEnd ? null : current.providerSubscriptionRef),
           updatedAt: now,
         })
         .where(eq(subscriptions.id, current.id));
