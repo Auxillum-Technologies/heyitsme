@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { useLocation } from "wouter";
-import TeamPay, { CHANNEL_LABELS } from "./TeamPay";
+import TeamPay, { channelLabel } from "./TeamPay";
 
 type Feature = [LucideIcon, string];
 
@@ -70,7 +70,7 @@ function PlanCard({ name, badge, headline, text, price, per, featured, features,
 }
 
 /** Name the team, pick how to pay. The team is made first, unpaid, so a payment always has a team to land on. */
-function TeamSignup({ channels, priceMinor, onCancel }: { channels: readonly PaymentChannel[]; priceMinor: number; onCancel: () => void }) {
+function TeamSignup({ channels, autoRenew, priceMinor, onCancel }: { channels: readonly PaymentChannel[]; autoRenew: readonly PaymentChannel[]; priceMinor: number; onCancel: () => void }) {
   const [name, setName] = useState("");
   const utils = trpc.useUtils();
   const create = trpc.teams.create.useMutation();
@@ -95,7 +95,7 @@ function TeamSignup({ channels, priceMinor, onCancel }: { channels: readonly Pay
       </label>
       {channels.map(channel => (
         <button key={channel} type="button" className="glass-button glass-button-primary" disabled={busy || name.trim().length < 2} onClick={() => void subscribe(channel)}>
-          {busy ? "Opening checkout…" : `Pay ${formatPeso(priceMinor)} with ${CHANNEL_LABELS[channel]}`}
+          {busy ? "Opening checkout…" : `Pay ${formatPeso(priceMinor)} with ${channelLabel(channel, autoRenew)}`}
         </button>
       ))}
       <button type="button" className="outline-button" onClick={onCancel} disabled={busy}>Not now</button>
@@ -107,6 +107,7 @@ function TeamSignup({ channels, priceMinor, onCancel }: { channels: readonly Pay
 type Offer = {
   checkoutOpen: boolean;
   channels: readonly PaymentChannel[];
+  autoRenewChannels: readonly PaymentChannel[];
   prices: { pro: { monthly: number } };
   teams: { enabled: boolean; checkoutOpen: boolean; priceMinor: number; seats: number };
 };
@@ -150,7 +151,7 @@ export default function PlanCards({ plan, offer, onUpgrade }: { plan: PlanCode; 
             {!teams.checkoutOpen ? (
               <button type="button" className="glass-button glass-button-primary" onClick={() => navigate("/app/team")}><UsersRound size={15} aria-hidden="true" /> Start a team</button>
             ) : signup ? (
-              <TeamSignup channels={offer.channels} priceMinor={teams.priceMinor} onCancel={() => setSignup(false)} />
+              <TeamSignup channels={offer.channels} autoRenew={offer.autoRenewChannels} priceMinor={teams.priceMinor} onCancel={() => setSignup(false)} />
             ) : (
               <button type="button" className="glass-button glass-button-primary" onClick={() => setSignup(true)}><UsersRound size={15} aria-hidden="true" /> Subscribe to Teams</button>
             )}
@@ -170,13 +171,14 @@ export default function PlanCards({ plan, offer, onUpgrade }: { plan: PlanCode; 
                     {team.state === "free" ? "No end date. Nothing to pay."
                       : team.state === "unpaid" ? "Not paid for yet. It opens for changes once it is paid."
                       : team.state === "ended" ? `The plan ended on ${dateText(team.accessUntil!)}. Everything is still there to view.`
+                      : team.renewsAutomatically ? `Renews by itself on ${dateText(team.accessUntil!)}.`
                       : `Paid through ${dateText(team.accessUntil!)}.`}
                   </small>
                 </span>
                 <div className="billing-actions">
                   <button type="button" className="outline-button" onClick={() => navigate(`/app/team/${team.id}`)}>Open team</button>
-                  {team.state !== "free" && teams.checkoutOpen ? (
-                    <TeamPay workspaceId={team.id} channels={offer.channels} priceMinor={teams.priceMinor} verb={team.state === "active" ? "Renew early:" : "Pay"} buttonClass={team.state === "active" ? "outline-button" : "glass-button glass-button-primary"} />
+                  {team.state !== "free" && teams.checkoutOpen && !team.renewsAutomatically ? (
+                    <TeamPay workspaceId={team.id} channels={offer.channels} autoRenew={offer.autoRenewChannels} priceMinor={teams.priceMinor} verb={team.state === "active" ? "Renew early:" : "Pay"} buttonClass={team.state === "active" ? "outline-button" : "glass-button glass-button-primary"} />
                   ) : null}
                 </div>
               </li>

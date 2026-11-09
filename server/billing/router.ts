@@ -19,7 +19,7 @@ import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
 import { getDb } from "../db";
 import { requireWorkspaceOwner } from "../teams/access";
 import { assertTeamCapability, teamPlanState } from "../teams/entitlements";
-import { CheckoutClosedError, enabledChannels, enabledCycles, getPaymentProvider, reconcileInvoice, startCheckout, startTeamCheckout, teamsCheckoutOpen,
+import { autoRenewChannels, CheckoutClosedError, enabledChannels, enabledCycles, getPaymentProvider, reconcileInvoice, startCheckout, startTeamCheckout, teamsCheckoutOpen,
 } from "./checkout";
 import { ownerCardHolds } from "./hold";
 import { notifyActivation } from "./paymentRoutes";
@@ -73,6 +73,8 @@ function offerFlags() {
   return {
     checkoutOpen: channels.length > 0,
     channels,
+    // Channels whose plan renews by itself each month. Every other channel buys one month at a time.
+    autoRenewChannels: autoRenewChannels(),
     cycles: enabledCycles(),
     proDesignEnabled: ENV.proDesignEnabled,
     qrCampaignsEnabled: ENV.qrCampaignsEnabled,
@@ -124,6 +126,7 @@ export const billingRouter = router({
             foundingMember: current.foundingMember,
             foundingMemberNumber: current.foundingMemberNumber,
             priceMinor: current.priceMinor,
+            renewsAutomatically: Boolean(current.providerSubscriptionRef) && !current.cancelAtPeriodEnd,
           }
         : null,
       ...offerFlags(),
@@ -166,12 +169,12 @@ export const billingRouter = router({
     if (!ENV.teamsEnabled) return [];
     const db = await requireDb();
     const rows = await db
-      .select({ id: workspaces.id, name: workspaces.name, seatLimit: workspaces.seatLimit, accessUntil: workspaces.accessUntil, createdAt: workspaces.createdAt })
+      .select({ id: workspaces.id, name: workspaces.name, seatLimit: workspaces.seatLimit, accessUntil: workspaces.accessUntil, createdAt: workspaces.createdAt, providerSubscriptionRef: workspaces.providerSubscriptionRef })
       .from(workspaceMembers)
       .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
       .where(and(eq(workspaceMembers.userId, ctx.user.id), eq(workspaceMembers.role, "owner"), eq(workspaceMembers.status, "active"), isNull(workspaces.deletedAt)))
       .orderBy(asc(workspaces.name));
-    return rows.map(row => ({ id: row.id, name: row.name, accessUntil: row.accessUntil, state: teamPlanState(row) }));
+    return rows.map(row => ({ id: row.id, name: row.name, accessUntil: row.accessUntil, state: teamPlanState(row), renewsAutomatically: Boolean(row.providerSubscriptionRef) }));
   }),
 
   /** Opens checkout for one team's plan. Only its owner can pay, and the price is the server's. */

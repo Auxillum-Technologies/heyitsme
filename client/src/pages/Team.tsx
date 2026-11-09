@@ -437,7 +437,7 @@ function Billing({ workspaceId }: { workspaceId: number }) {
   const billing = trpc.teams.billing.useQuery({ workspaceId });
   if (billing.isLoading) return <section className="gr-panel" role="status">Loading...</section>;
   if (!billing.data) return <section className="gr-panel"><p role="alert" className="gr-error">{billing.error?.message ?? "Billing could not be loaded."}</p></section>;
-  const { seats, accessUntil, ended, state, plan } = billing.data;
+  const { seats, accessUntil, ended, state, plan, renewsAutomatically } = billing.data;
   const price = `${formatPeso(plan.priceMinor)} a month`;
   const metrics: [string, number][] = [["Seats in use", seats.used], ["Seats on this team", seats.allowed], ["Free seats", seats.free]];
   return <section className="gr-panel">
@@ -446,10 +446,11 @@ function Billing({ workspaceId }: { workspaceId: number }) {
     <p>{seats.active} active, {seats.invited} invited, {seats.suspended} suspended. Each of them holds a seat. Removing a person or cancelling an invitation frees it.</p>
     {seats.used > seats.allowed ? <p role="status"><strong>This team has more people than seats.</strong> Nobody is removed, but new invitations wait until there is a free seat.</p> : null}
     <p>{state === "unpaid" ? "This team is not paid for yet." : ended ? `The plan ended on ${day(accessUntil)}.` : accessUntil ? `The plan runs until ${day(accessUntil)}.` : "This team has no end date."}</p>
-    {state === "free" ? <p className="gr-attribution">This team has no end date, so there is nothing to pay here. To change the number of seats, contact heyitsme.</p>
+    {renewsAutomatically && state === "active" ? <p className="gr-attribution">This plan renews by itself each month with Maya. Nothing to pay here.</p>
+      : state === "free" ? <p className="gr-attribution">This team has no end date, so there is nothing to pay here. To change the number of seats, contact heyitsme.</p>
       : plan.checkoutOpen ? <>
         <p>Teams is {price} for each team, with {plan.seats} seats. {state === "active" ? "Paying now adds one month after the date above." : "Paying opens the team for one month from today."} If the plan runs out and is not renewed within {HOLD_GRACE_DAYS} days, the team is put on hold until it is paid. Nothing is deleted.</p>
-        <div className="gr-actions"><TeamPay workspaceId={workspaceId} channels={plan.channels} priceMinor={plan.priceMinor} verb={state === "active" ? "Renew early:" : "Pay"} buttonClass={state === "active" ? "gr-secondary" : "gr-primary"} /></div>
+        <div className="gr-actions"><TeamPay workspaceId={workspaceId} channels={plan.channels} autoRenew={plan.autoRenewChannels} priceMinor={plan.priceMinor} verb={state === "active" ? "Renew early:" : "Pay"} buttonClass={state === "active" ? "gr-secondary" : "gr-primary"} /></div>
         <p className="gr-attribution">You pay on the payment provider's page and come back to your Billing page. For more than {plan.seats} seats, contact heyitsme.</p>
       </> : <p className="gr-attribution">Checkout for Teams is not open right now. To renew or change seats, contact heyitsme.</p>}
   </section>;

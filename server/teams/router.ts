@@ -20,7 +20,7 @@ import { sendMail, teamInviteMail } from "../_core/mail";
 import { clientIp, hashIdentifier, rateLimit } from "../_core/rateLimit";
 import { siteOrigin } from "../_core/seo";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "../_core/trpc";
-import { enabledChannels, teamsCheckoutOpen } from "../billing/checkout";
+import { autoRenewChannels, enabledChannels, teamsCheckoutOpen } from "../billing/checkout";
 import type { Db } from "../billing/service";
 import { getDb } from "../db";
 import {
@@ -642,7 +642,8 @@ export const teamsRouter = router({
       ended: planEnded(workspace),
       state: teamPlanState(workspace),
       held: teamHeld(workspace),
-      plan: { checkoutOpen: teamsCheckoutOpen(), channels: teamsCheckoutOpen() ? enabledChannels() : [], priceMinor: TEAMS_PLAN.priceMinor, seats: TEAMS_PLAN.seats },
+      renewsAutomatically: Boolean(workspace.providerSubscriptionRef),
+      plan: { checkoutOpen: teamsCheckoutOpen(), channels: teamsCheckoutOpen() ? enabledChannels() : [], autoRenewChannels: teamsCheckoutOpen() ? autoRenewChannels() : [], priceMinor: TEAMS_PLAN.priceMinor, seats: TEAMS_PLAN.seats },
     };
   }),
 

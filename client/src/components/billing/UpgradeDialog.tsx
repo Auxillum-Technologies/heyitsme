@@ -9,6 +9,7 @@ import {
 import { useBilling, type UpgradeReason } from "@/lib/billing";
 import { trpc } from "@/lib/trpc";
 import type { PaymentChannel } from "@shared/plans";
+import { channelLabel } from "./TeamPay";
 import { useState } from "react";
 import "./billing.css";
 const reasons: Record<UpgradeReason, string> = {
@@ -71,7 +72,7 @@ export default function UpgradeDialog({
               checked={selected === c}
               onChange={() => setChannel(c)}
             />
-            {c === "gcash" ? "GCash" : "Google Pay"}
+            {channelLabel(c, billing.data?.autoRenewChannels)}
           </label>
         ))}
         <button
