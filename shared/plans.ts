@@ -11,7 +11,8 @@ export const BILLING_CYCLES = ["monthly"] as const;
 // Historical annual invoices remain readable and settle at their original terms.
 export type BillingCycle = "monthly" | "annual";
 
-export const PAYMENT_CHANNELS = ["googlepay", "gcash"] as const;
+// googlepay runs on 2C2P only. card, maya and qrph run on PayMongo only. gcash runs on both.
+export const PAYMENT_CHANNELS = ["googlepay", "gcash", "card", "maya", "qrph"] as const;
 export type PaymentChannel = (typeof PAYMENT_CHANNELS)[number];
 
 /** Insight ranges in days. Free sees the first one when plan limits are on. */

@@ -1,7 +1,7 @@
 import { trpc } from "@/lib/trpc";
 import { formatPeso, type PaymentChannel } from "@shared/plans";
 
-export const CHANNEL_LABELS: Record<PaymentChannel, string> = { gcash: "GCash", googlepay: "Google Pay" };
+export const CHANNEL_LABELS: Record<PaymentChannel, string> = { gcash: "GCash", googlepay: "Google Pay", card: "Card", maya: "Maya", qrph: "QR Ph" };
 
 /**
  * One button per open payment method, for one team's monthly plan. The price shown comes from the server,
