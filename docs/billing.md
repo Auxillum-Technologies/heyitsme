@@ -65,6 +65,7 @@ When PayMongo reports a team's subscription `unpaid` or cancelled, the team rene
 Cancel stops the PayMongo subscription first.
 If PayMongo cannot stop it, nothing changes and the buyer sees an error.
 PayMongo cannot restart a cancelled subscription, so resume keeps the plan and makes it renewed by hand.
+A canceled plan that is then paid by hand (Renew early) also renews by hand, because its PayMongo subscription is already stopped.
 A team owner can stop a team's auto-renewal on the team's Billing tab, with the same rule: PayMongo first, then the team keeps its plan date and renews by hand.
 A plan that renews by itself refuses a second checkout, and Billing hides Renew early for it.
 The PayMongo subscription of a person's plan is on `subscriptions.providerSubscriptionRef`, and of a team on `workspaces.providerSubscriptionRef` (`drizzle/0023_paymongo.sql`).
