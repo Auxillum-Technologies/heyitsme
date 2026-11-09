@@ -36,11 +36,20 @@ export default function UpgradeDialog({
   const checkout = trpc.billing.createCheckout.useMutation();
   const [channel, setChannel] = useState<PaymentChannel | null>(null);
   // Auto-renewal charges from the day it starts, so a plan with paid time left renews early by a one-time payment.
-  const paidTimeLeft = Boolean(billing.data?.subscription && new Date(billing.data.subscription.currentPeriodEnd).getTime() > Date.now());
+  const paidTimeLeft = Boolean(
+    billing.data?.subscription &&
+      new Date(billing.data.subscription.currentPeriodEnd).getTime() >
+        Date.now()
+  );
   const channels = billing.data
-    ? paidTimeLeft ? billing.data.channels.filter(c => !billing.data.autoRenewChannels.includes(c)) : billing.data.channels
+    ? paidTimeLeft
+      ? billing.data.channels.filter(
+          c => !billing.data.autoRenewChannels.includes(c)
+        )
+      : billing.data.channels
     : [];
-  const selected = channel && channels.includes(channel) ? channel : channels[0];
+  const selected =
+    channel && channels.includes(channel) ? channel : channels[0];
   const start = async () => {
     if (!isAuthenticated) {
       startGoogleLogin("/app/billing?upgrade=1");
@@ -96,7 +105,9 @@ export default function UpgradeDialog({
         {isAuthenticated && !billing.data?.checkoutOpen ? (
           <p role="status">Checkout is not open yet.</p>
         ) : (
-          <p>{upgradeFootnote(selected, billing.data?.autoRenewChannels ?? [])}</p>
+          <p>
+            {upgradeFootnote(selected, billing.data?.autoRenewChannels ?? [])}
+          </p>
         )}
         {checkout.error ? <p role="alert">{checkout.error.message}</p> : null}
         {billing.isError ? (
