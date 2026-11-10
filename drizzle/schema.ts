@@ -183,6 +183,7 @@ export const subscriptions = pgTable("subscriptions", {
 },
   table => [
   index("subscriptions_account_idx").on(table.billingAccountId),
+  index("subscriptions_provider_subscription_idx").on(table.providerSubscriptionRef),
   uniqueIndex("subscriptions_founding_number_idx").on(table.foundingMemberNumber),
 ]).enableRLS();
 
@@ -193,8 +194,10 @@ export const payments = pgTable("payments", {
   provider: varchar("provider", { length: 32 }).notNull(),
   /** Our invoice number sent to the gateway. Unique, so one gateway result settles one payment once. */
   providerTransactionId: varchar("providerTransactionId", { length: 64 }).notNull().unique(),
-  /** The gateway's own reference (2C2P tranRef), once known. */
+  /** The gateway's own reference (2C2P tranRef, PayMongo payment or invoice id), once known. */
   providerInvoiceRef: varchar("providerInvoiceRef", { length: 128 }).unique(),
+  /** What checkout opened at the gateway (PayMongo Checkout Session or subscription id), to read it back by. */
+  providerCheckoutRef: varchar("providerCheckoutRef", { length: 128 }),
   purpose: varchar("purpose", { length: 24 }).notNull(),
   planCode: varchar("planCode", { length: 16 }),
   billingCycle: varchar("billingCycle", { length: 16 }),
@@ -213,6 +216,7 @@ export const payments = pgTable("payments", {
   succeededAt: timestamp("succeededAt", { mode: "date" }),
 },
   table => [index("payments_user_created_idx").on(table.userId, table.createdAt),
+  index("payments_provider_checkout_idx").on(table.providerCheckoutRef),
   ]).enableRLS();
 
 export const usageCounters = pgTable("usageCounters", {
@@ -325,13 +329,16 @@ export const workspaces = pgTable("workspaces", {
   seatLimit: integer("seatLimit"),
   // When the team's plan runs out. Empty means no end. After it the team can be read but not changed.
   accessUntil: timestamp("accessUntil", { mode: "date" }),
+  // The PayMongo subscription that renews this team's plan by itself. Empty when the owner renews by hand.
+  providerSubscriptionRef: varchar("providerSubscriptionRef", { length: 128 }),
   timezone: varchar("timezone", { length: 64 }).default("Asia/Manila").notNull(),
   createdBy: integer("createdBy").notNull(),
   createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
   updatedAt: timestamp("updatedAt", { mode: "date" }).defaultNow().notNull(),
   // Closing a workspace only sets this. Nothing is deleted.
   deletedAt: timestamp("deletedAt", { mode: "date" }),
-}).enableRLS();
+},
+  table => [uniqueIndex("workspaces_provider_subscription_idx").on(table.providerSubscriptionRef)]).enableRLS();
 
 // One row per person per workspace, kept for life: an invitation, then a membership, then "removed".
 // userId is empty until the invited person signs in and accepts. email is stored lowercase.

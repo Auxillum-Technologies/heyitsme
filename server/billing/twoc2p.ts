@@ -1,6 +1,6 @@
 import { jwtVerify, SignJWT } from "jose";
 import type { PaymentChannel } from "@shared/plans";
-import { PaymentProviderError, type CheckoutRequest, type CheckoutSession, type PaymentProvider, type PaymentResult } from "./provider";
+import { PaymentProviderError, type CheckoutRequest, type CheckoutSession, type PaymentProvider, type PaymentResult, type SubscriptionState } from "./provider";
 
 // 2C2P Payment Gateway (PGW) v4.5, redirect integration: we create a payment token, the buyer pays on the
 // 2C2P hosted page (which renders the official Google Pay and wallet buttons), and 2C2P posts a signed result
@@ -11,7 +11,8 @@ import { PaymentProviderError, type CheckoutRequest, type CheckoutSession, type 
 const HOSTS = { sandbox: "https://sandbox-pgw.2c2p.com", production: "https://pgw.2c2p.com" } as const;
 const VERSION = "4.5";
 
-export const CHANNEL_CODES: Record<PaymentChannel, string> = {
+/** 2C2P channel code for each channel it takes. Card, Maya and QR Ph run on PayMongo only. */
+export const CHANNEL_CODES: Partial<Record<PaymentChannel, string>> = {
   googlepay: "GOOGLEPAY",
   gcash: "DPAY",
 };
@@ -83,13 +84,15 @@ export class TwoC2PProvider implements PaymentProvider {
   }
 
   async createCheckout(request: CheckoutRequest): Promise<CheckoutSession> {
+    const channelCode = CHANNEL_CODES[request.channel];
+    if (!channelCode) throw new PaymentProviderError(`2C2P does not take ${request.channel}`, "not_supported");
     const result = await this.call("paymentToken", {
       merchantID: this.config.merchantId,
       invoiceNo: request.invoiceNo,
       description: request.description.slice(0, 250),
       amount: toGatewayAmount(request.amountMinor),
       currencyCode: request.currency,
-      paymentChannel: [CHANNEL_CODES[request.channel]],
+      paymentChannel: [channelCode],
       frontendReturnUrl: request.frontendReturnUrl,
       backendReturnUrl: request.backendReturnUrl,
     });
@@ -113,8 +116,8 @@ export class TwoC2PProvider implements PaymentProvider {
     // Annual plans are one-time charges, so there is nothing to stop at the gateway.
   }
 
-  async getSubscriptionStatus(): Promise<"active" | "canceled" | "unknown"> {
-    return "unknown";
+  async getSubscription(): Promise<SubscriptionState> {
+    return { status: "unknown", latestInvoice: null };
   }
 
   private toResult(claims: Claims): PaymentResult {

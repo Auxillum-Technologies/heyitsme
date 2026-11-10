@@ -44,8 +44,8 @@ class FakeGateway implements PaymentProvider {
     throw new Error("not used");
   }
   async cancelSubscription() {}
-  async getSubscriptionStatus() {
-    return "unknown" as const;
+  async getSubscription() {
+    return { status: "unknown" as const, latestInvoice: null };
   }
   async verifyCallback(body: unknown) {
     const b = body as { signed?: boolean; invoiceNo?: string };

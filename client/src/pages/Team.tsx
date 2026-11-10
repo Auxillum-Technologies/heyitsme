@@ -437,7 +437,7 @@ function Billing({ workspaceId }: { workspaceId: number }) {
   const billing = trpc.teams.billing.useQuery({ workspaceId });
   if (billing.isLoading) return <section className="gr-panel" role="status">Loading...</section>;
   if (!billing.data) return <section className="gr-panel"><p role="alert" className="gr-error">{billing.error?.message ?? "Billing could not be loaded."}</p></section>;
-  const { seats, accessUntil, ended, state, plan } = billing.data;
+  const { seats, accessUntil, ended, state, plan, renewsAutomatically } = billing.data;
   const price = `${formatPeso(plan.priceMinor)} a month`;
   const metrics: [string, number][] = [["Seats in use", seats.used], ["Seats on this team", seats.allowed], ["Free seats", seats.free]];
   return <section className="gr-panel">
@@ -446,13 +446,36 @@ function Billing({ workspaceId }: { workspaceId: number }) {
     <p>{seats.active} active, {seats.invited} invited, {seats.suspended} suspended. Each of them holds a seat. Removing a person or cancelling an invitation frees it.</p>
     {seats.used > seats.allowed ? <p role="status"><strong>This team has more people than seats.</strong> Nobody is removed, but new invitations wait until there is a free seat.</p> : null}
     <p>{state === "unpaid" ? "This team is not paid for yet." : ended ? `The plan ended on ${day(accessUntil)}.` : accessUntil ? `The plan runs until ${day(accessUntil)}.` : "This team has no end date."}</p>
-    {state === "free" ? <p className="gr-attribution">This team has no end date, so there is nothing to pay here. To change the number of seats, contact heyitsme.</p>
+    {renewsAutomatically ? <StopAutoRenew workspaceId={workspaceId} accessUntil={accessUntil} ended={ended} />
+      : state === "free" ? <p className="gr-attribution">This team has no end date, so there is nothing to pay here. To change the number of seats, contact heyitsme.</p>
       : plan.checkoutOpen ? <>
         <p>Teams is {price} for each team, with {plan.seats} seats. {state === "active" ? "Paying now adds one month after the date above." : "Paying opens the team for one month from today."} If the plan runs out and is not renewed within {HOLD_GRACE_DAYS} days, the team is put on hold until it is paid. Nothing is deleted.</p>
-        <div className="gr-actions"><TeamPay workspaceId={workspaceId} channels={plan.channels} priceMinor={plan.priceMinor} verb={state === "active" ? "Renew early:" : "Pay"} buttonClass={state === "active" ? "gr-secondary" : "gr-primary"} /></div>
+        <div className="gr-actions"><TeamPay workspaceId={workspaceId} channels={plan.channels} autoRenew={plan.autoRenewChannels} priceMinor={plan.priceMinor} renewEarly={state === "active"} buttonClass={state === "active" ? "gr-secondary" : "gr-primary"} /></div>
         <p className="gr-attribution">You pay on the payment provider's page and come back to your Billing page. For more than {plan.seats} seats, contact heyitsme.</p>
       </> : <p className="gr-attribution">Checkout for Teams is not open right now. To renew or change seats, contact heyitsme.</p>}
   </section>;
+}
+
+/** The owner stops a plan that renews by itself. The team keeps its plan date and is renewed by hand after that. */
+function StopAutoRenew({ workspaceId, accessUntil, ended }: { workspaceId: number; accessUntil: Date | string | null; ended: boolean }) {
+  const utils = trpc.useUtils();
+  const stop = trpc.billing.cancelTeamSubscription.useMutation();
+  const onStop = async () => {
+    try {
+      const result = await stop.mutateAsync({ workspaceId });
+      toast.success(ended
+        ? `Auto-renewal is off. The plan ended on ${day(result.accessUntil)}. Pay by hand now to keep the team open.`
+        : `Auto-renewal is off. The team stays paid until ${day(result.accessUntil)}. Renew by hand before then to keep it open.`);
+      await Promise.all([utils.teams.billing.invalidate({ workspaceId }), utils.billing.teamPlans.invalidate()]);
+    } catch { /* The error shows under the button. */ }
+  };
+  return <>
+    <p className="gr-attribution">{ended
+      ? "The Maya renewal payment did not go through, and the payment provider tries it again each day. Stop auto-renewal to stop these tries and pay another way."
+      : `This plan renews by itself with Maya on ${day(accessUntil)}. Stop auto-renewal before then to stop the next payment.`}</p>
+    <div className="gr-actions"><button type="button" className="gr-secondary" disabled={stop.isPending} onClick={() => void onStop()}>{stop.isPending ? "Stopping..." : "Stop auto-renewal"}</button></div>
+    {stop.error ? <p role="alert" className="gr-error">{stop.error.message}</p> : null}
+  </>;
 }
 
 function Settings({ workspace, role, onGone }: { workspace: Workspace; role: WorkspaceRole; onGone: () => void }) {

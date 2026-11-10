@@ -39,8 +39,8 @@ class FakeGateway implements PaymentProvider {
     throw new Error("not used");
   }
   async cancelSubscription() {}
-  async getSubscriptionStatus() {
-    return "unknown" as const;
+  async getSubscription() {
+    return { status: "unknown" as const, latestInvoice: null };
   }
   async verifyCallback(body: unknown) {
     const b = body as { signed?: boolean; invoiceNo?: string };
@@ -131,8 +131,8 @@ describe("starting a team while Teams is sold", () => {
 
     const billing = await team.as.teams.billing({ workspaceId: team.workspaceId });
     expect(billing.state).toBe("unpaid");
-    expect(billing.plan).toEqual({ checkoutOpen: true, channels: expect.arrayContaining(["gcash"]), priceMinor: TEAMS_PLAN.priceMinor, seats: TEAMS_PLAN.seats });
-    expect(await team.as.billing.teamPlans()).toEqual([{ id: team.workspaceId, name: "Acme", accessUntil: row.accessUntil, state: "unpaid" }]);
+    expect(billing.plan).toEqual({ checkoutOpen: true, channels: expect.arrayContaining(["gcash"]), autoRenewChannels: [], priceMinor: TEAMS_PLAN.priceMinor, seats: TEAMS_PLAN.seats });
+    expect(await team.as.billing.teamPlans()).toEqual([{ id: team.workspaceId, name: "Acme", accessUntil: row.accessUntil, state: "unpaid", renewsAutomatically: false }]);
   });
 
   it("stays free with no end date while Teams is not sold", async () => {

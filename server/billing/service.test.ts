@@ -243,7 +243,7 @@ describe("subscription lifecycle", () => {
           title: "",
           slug: `card-${u.id}-${i}`,
         });
-    await cancelAtPeriodEnd(db, u.id, NOW);
+    await cancelAtPeriodEnd(db, u.id, async () => {}, NOW);
     expect(
       (await getUserEntitlements(db, u, new Date("2027-10-01T00:00:00Z"))).plan
     ).toBe("pro");

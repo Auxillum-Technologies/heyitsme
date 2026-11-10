@@ -18,7 +18,7 @@ export async function notifyActivation(outcome: SettleOutcome, origin: string) {
       await sendMail(teamPaymentSucceededMail({ to: user.email, periodEnd: outcome.periodEnd, teamUrl: `${origin}/app/team/${outcome.workspaceId}` }));
       return;
     }
-    await sendMail(paymentSucceededMail({ to: user.email, periodEnd: outcome.periodEnd, foundingNumber: outcome.foundingMemberNumber, billingUrl: `${origin}/app/billing` }));
+    await sendMail(paymentSucceededMail({ to: user.email, periodEnd: outcome.periodEnd, foundingNumber: outcome.foundingMemberNumber, billingUrl: `${origin}/app/billing`, renewsAutomatically: outcome.renewsAutomatically }));
   } catch (error) {
     console.error("[Mail] could not send payment confirmation:", error);
   }
@@ -71,6 +71,7 @@ export function registerPaymentRoutes(app: Express) {
   app.post("/api/payments/2c2p/callback", handleCallback);
   app.get("/api/payments/2c2p/return", handleReturn);
   app.post("/api/payments/2c2p/return", handleReturn);
+  app.get("/api/payments/paymongo/return", handleReturn);
 }
 
 export const _test = { handleCallback, handleReturn };

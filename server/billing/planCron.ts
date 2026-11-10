@@ -3,19 +3,21 @@
 // from the dates on every request (server/billing/hold.ts).
 import { timingSafeEqual } from "node:crypto";
 import type { Express } from "express";
-import { and, eq, gt, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, eq, exists, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import { FREE_TEAM_NOTICE_DAYS, HOLD_GRACE_DAYS, holdStartsAt } from "@shared/hold";
-import { appSettings, billingAccounts, subscriptions, users, workspaceMembers, workspaces } from "../../drizzle/schema";
+import { appSettings, billingAccounts, payments, subscriptions, users, workspaceMembers, workspaces } from "../../drizzle/schema";
 import { ENV } from "../_core/env";
 import { sendMail } from "../_core/mail";
 import { logJson, siteOrigin } from "../_core/seo";
 import { getDb } from "../db";
 import { teamsCheckoutOpen } from "./checkout";
 import { proLapse } from "./hold";
-import { proEndedMail, teamFreeEndingMail, teamPlanEndedMail } from "./mail";
-import type { Db } from "./service";
+import { proEndedMail, proRenewalDueMail, teamFreeEndingMail, teamPlanEndedMail, teamRenewalDueMail } from "./mail";
+import { TEAM_PAYMENT_PURPOSE, type Db } from "./service";
 
 const DAY = 86_400_000;
+/** A plan renewed by hand gets one reminder this many days before it ends. */
+export const RENEWAL_REMINDER_DAYS = 3;
 
 /** True the first time a notice is claimed, false ever after. One row per notice, so two runs cannot both send it. */
 async function claimNotice(db: Db, kind: string, subjectId: number, at: Date) {
@@ -96,11 +98,70 @@ export async function remindEndedPro(db: Db, origin: string, now = new Date()) {
   return sent;
 }
 
+/**
+ * One email before the end of each plan that does not renew by itself: GCash, QR Ph and card buy one month at
+ * a time, and no gateway can charge GCash on its own. A plan with a gateway subscription renews by itself and
+ * gets none. A Pro plan the buyer canceled gets none, and a team that was never paid for gets none.
+ */
+export async function remindRenewalDue(db: Db, origin: string, now = new Date()) {
+  const until = new Date(now.getTime() + RENEWAL_REMINDER_DAYS * DAY);
+  let sent = 0;
+  const pro = await db
+    .select({ userId: billingAccounts.ownerUserId, endsAt: subscriptions.currentPeriodEnd, email: users.email })
+    .from(subscriptions)
+    .innerJoin(billingAccounts, eq(billingAccounts.id, subscriptions.billingAccountId))
+    .innerJoin(users, eq(users.id, billingAccounts.ownerUserId))
+    .where(
+      and(
+        inArray(subscriptions.status, ["active", "past_due"]),
+        eq(subscriptions.cancelAtPeriodEnd, false),
+        isNull(subscriptions.providerSubscriptionRef),
+        gt(subscriptions.currentPeriodEnd, now),
+        lte(subscriptions.currentPeriodEnd, until)
+      )
+    );
+  for (const plan of pro) {
+    if (plan.userId === null || !plan.email || !(await claimNotice(db, "pro-renew", plan.userId, plan.endsAt))) continue;
+    if (await sendMail(proRenewalDueMail({ to: plan.email, endsAt: plan.endsAt, holdFrom: holdStartsAt(plan.endsAt), billingUrl: `${origin}/app/billing` }))) sent += 1;
+  }
+  const teams = await db
+    .select({ id: workspaces.id, name: workspaces.name, endsAt: workspaces.accessUntil })
+    .from(workspaces)
+    .where(
+      and(
+        isNull(workspaces.deletedAt),
+        isNull(workspaces.providerSubscriptionRef),
+        gt(workspaces.accessUntil, now),
+        lte(workspaces.accessUntil, until),
+        exists(
+          db
+            .select({ id: payments.id })
+            .from(payments)
+            .where(
+              and(
+                eq(payments.purpose, TEAM_PAYMENT_PURPOSE),
+                eq(payments.status, "succeeded"),
+                // CASE keeps Postgres from reading metadataJson as JSON on rows that are not team payments.
+                sql`(case when ${payments.purpose} = ${TEAM_PAYMENT_PURPOSE} then ${payments.metadataJson}::jsonb ->> 'workspaceId' end) = ${workspaces.id}::text`
+              )
+            )
+        )
+      )
+    );
+  for (const team of teams) {
+    if (!team.endsAt || !(await claimNotice(db, "team-renew", team.id, team.endsAt))) continue;
+    const to = await teamOwnerEmail(db, team.id);
+    if (to && (await sendMail(teamRenewalDueMail({ to, teamName: team.name, endsAt: team.endsAt, holdFrom: holdStartsAt(team.endsAt), teamUrl: `${origin}/app/team/${team.id}` })))) sent += 1;
+  }
+  return sent;
+}
+
 export async function runPlanCron(db: Db, origin: string, now = new Date()) {
   const freeTeamsEnded = await endFreeTeams(db, origin, now);
   const teamReminders = await remindEndedTeams(db, origin, now);
   const proReminders = await remindEndedPro(db, origin, now);
-  return { freeTeamsEnded, teamReminders, proReminders };
+  const renewalReminders = await remindRenewalDue(db, origin, now);
+  return { freeTeamsEnded, teamReminders, proReminders, renewalReminders };
 }
 
 const sameSecret = (given: string, expected: string) => {

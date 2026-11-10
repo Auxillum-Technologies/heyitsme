@@ -40,6 +40,15 @@ export const ENV = {
   googlePayEnabled: flag("GOOGLE_PAY_ENABLED", false),
   googlePayRecurringEnabled: flag("GOOGLE_PAY_RECURRING_ENABLED", false),
   gcashEnabled: flag("GCASH_ENABLED", false),
+  // PayMongo channels. Google Pay runs on 2C2P only, and card, Maya and QR Ph run on PayMongo only.
+  cardEnabled: flag("CARD_ENABLED", false),
+  mayaEnabled: flag("MAYA_ENABLED", false),
+  qrphEnabled: flag("QRPH_ENABLED", false),
+  paymongoSecretKey: process.env.PAYMONGO_SECRET_KEY ?? "",
+  // Shown once when the webhook is made in the PayMongo dashboard. Signs every webhook delivery.
+  paymongoWebhookSecret: process.env.PAYMONGO_WEBHOOK_SECRET ?? "",
+  // PayMongo support must turn Subscriptions on for the account first. Off: Maya pays one month at a time.
+  paymongoSubscriptionsEnabled: flag("PAYMONGO_SUBSCRIPTIONS_ENABLED", false),
   // Used when Google Pay is loaded on our own pages. The 2C2P hosted page does not need them.
   googlePayMerchantId: process.env.GOOGLE_PAY_MERCHANT_ID ?? "",
   googlePayMerchantName: process.env.GOOGLE_PAY_MERCHANT_NAME || "heyitsme",

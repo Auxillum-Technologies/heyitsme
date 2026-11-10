@@ -2,6 +2,7 @@ import "dotenv/config";
 import express, { type ErrorRequestHandler, type Express, type RequestHandler } from "express";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
+import { registerPaymentWebhooks } from "../billing/paymongoWebhook";
 import { registerPaymentRoutes } from "../billing/paymentRoutes";
 import { registerPlanCron } from "../billing/planCron";
 import QRCode from "qrcode";
@@ -59,6 +60,8 @@ export function createApp(): Express {
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
   app.use(securityHeaders);
+  // Signed webhooks read their own raw body, so they come before the JSON parsers below.
+  registerPaymentWebhooks(app);
   // Uploads arrive as base64 inside tRPC JSON: 3 MB files become ~4.2 MB. Vercel caps bodies at 4.5 MB.
   app.use("/api/trpc", express.json({ limit: "6mb" }));
   app.use(express.json({ limit: "100kb" }));

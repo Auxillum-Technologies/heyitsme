@@ -10,19 +10,81 @@ Design, QR campaigns and advanced analytics default on for this release. Payment
 
 | Variable | Effect |
 |---|---|
-| `PAYMENTS_ENABLED` | Opens verified 2C2P checkout. |
+| `PAYMENTS_ENABLED` | Opens checkout on the gateway that `PAYMENT_PROVIDER` names. |
+| `PAYMENT_PROVIDER` | `paymongo` or `2c2p` (default). Any other value refuses checkout. |
 | `PLAN_LIMITS_ENABLED` | Enforces one/five-card limits, Free monthly quota and analytics retention access. |
 | `PRO_DESIGN_ENABLED` | Enables Pro design and advanced QR writes. Paid entitlement is still required. |
 | `QR_CAMPAIGNS_ENABLED` | Enables campaign creation and scan recording. Creation requires Pro and an owned card. |
 | `PRO_ANALYTICS_ENABLED` | Enables additional charts and campaign analytics for Pro. |
-| `GOOGLE_PAY_ENABLED`, `GCASH_ENABLED` | Enables the corresponding hosted checkout channel. |
+| `GOOGLE_PAY_ENABLED`, `GCASH_ENABLED` | Enables the corresponding hosted checkout channel. Google Pay runs on 2C2P only. |
+| `CARD_ENABLED`, `MAYA_ENABLED`, `QRPH_ENABLED` | Enables card, Maya and QR Ph. PayMongo only. |
+| `PAYMONGO_SECRET_KEY`, `PAYMONGO_WEBHOOK_SECRET` | Server-only PayMongo credentials. The webhook secret is shown once, when the webhook is made in the PayMongo dashboard. |
+| `PAYMONGO_SUBSCRIPTIONS_ENABLED` | Lets Maya renew by itself each month. Turn it on only after PayMongo support enables Subscriptions on the account. Default off. |
 | `TEAMS_BILLING_ENABLED` | Sells Teams at checkout. Needs `TEAMS_ENABLED`, `PAYMENTS_ENABLED` and a payment channel. Default off. |
 | `CRON_SECRET` | Shared with Vercel Cron for the daily plan run. Empty: the run is refused, so no notices are sent and free teams keep no end date. |
-| `PAYMENT_PROVIDER_ENV` | Defaults to sandbox. Set production only after sandbox verification. |
+| `PAYMENT_PROVIDER_ENV` | Defaults to sandbox (PayMongo test mode). Set production only after sandbox verification. |
 | `PAYMENT_GATEWAY_MERCHANT_ID`, `PAYMENT_GATEWAY_SECRET` | Server-only 2C2P credentials. |
 | `COMPLIMENTARY_EMAILS` | Preserves the existing owner/admin complimentary entitlement. |
 
-The existing adapter sells a monthly access period. Renewal is manual through Billing. No automatic recurring debit is scheduled. Subscription cancellation keeps access through the paid period. Historical payment records still settle against their stored amount and billing term.
+Each checkout sells one monthly access period. On 2C2P, and on PayMongo for GCash, QR Ph and card, renewal is manual through Billing. On PayMongo, Maya can renew by itself (see PayMongo). Subscription cancellation keeps access through the paid period. Historical payment records still settle against their stored amount and billing term.
+
+## PayMongo
+
+Owner decision, 2026-11-09: PayMongo is the gateway, with `PAYMENT_PROVIDER=paymongo`.
+The adapter is `server/billing/paymongo.ts`.
+The 2C2P adapter stays, and `PAYMENT_PROVIDER=2c2p` selects it.
+
+**Channels.**
+GCash, QR Ph and card pay one prepaid month on the PayMongo hosted Checkout page.
+No card number is typed on heyitsme, so the CSP does not change.
+Maya renews by itself each month through a PayMongo subscription while `PAYMONGO_SUBSCRIPTIONS_ENABLED` is on.
+While it is off, Maya also pays one prepaid month.
+No gateway can charge GCash on its own today, so GCash buyers renew by hand.
+The pay button for a channel that renews by itself says "renews each month" (`billing.offer.autoRenewChannels`).
+
+**Settlement.**
+PayMongo calls `POST /api/payments/paymongo/webhook`.
+The route reads the raw body and checks the `Paymongo-Signature` header (HMAC-SHA256 of `t.body`, `te` in test mode, `li` in live mode, at most 5 minutes old).
+It is registered before the JSON parser, because a parsed body breaks the signature.
+A verified event is only a hint.
+The server reads the Checkout Session or the subscription back from PayMongo, then calls `settlePayment` as for every other payment.
+`payments.providerCheckoutRef` keeps the session or subscription id that checkout opened.
+Each paid renewal invoice adds one `payments` row with purpose `renewal` (`teams` for a team), copied from the first payment, and moves the plan end one month.
+The invoice id is stored in the unique `payments.providerInvoiceRef`, so a repeated delivery changes nothing.
+Unknown event types get a 200, so PayMongo does not retry them.
+
+**Status.**
+PayMongo `past_due` sets `past_due`, and Pro stays for the 3-day grace after the plan end.
+`unpaid` (after PayMongo's last retry) sets `expired`.
+A cancel made at PayMongo sets `canceled` with access to the end of the paid month.
+A later paid invoice makes the plan active again.
+A team has no status: its plan date decides, as before.
+When PayMongo reports a team's subscription `unpaid` or cancelled, the team renews by hand again, so its owner can pay another way.
+
+**Cancel and resume.**
+Cancel stops the PayMongo subscription first.
+If PayMongo cannot stop it, nothing changes and the buyer sees an error.
+PayMongo cannot restart a cancelled subscription, so resume keeps the plan and makes it renewed by hand.
+A canceled plan that is then paid by hand (Renew early) also renews by hand, because its PayMongo subscription is already stopped.
+A team owner can stop a team's auto-renewal on the team's Billing tab, with the same rule: PayMongo first, then the team keeps its plan date and renews by hand.
+A plan that renews by itself refuses a second checkout, and Billing hides Renew early for it.
+While a plan still has paid time, Renew early offers only one-time methods, and the server refuses Maya auto-renewal, because PayMongo charges from the day a subscription starts.
+The PayMongo subscription of a person's plan is on `subscriptions.providerSubscriptionRef`, and of a team on `workspaces.providerSubscriptionRef` (`drizzle/0023_paymongo.sql`).
+
+**Reminders.**
+The daily run sends one email 3 days before a plan that is renewed by hand ends: Pro to the buyer, Teams to the team owner.
+A plan that renews by itself, a canceled plan and a team that was never paid get none.
+
+**Refunds.**
+`PayMongoProvider.refundPayment` refunds all or part of a payment by its PayMongo payment id (`pay_...`).
+There is no screen for it yet.
+A renewal is stored by its invoice id, so refund it in the PayMongo dashboard.
+
+**Setup, in this order.**
+1. In the PayMongo dashboard (test mode), make a webhook for `https://<host>/api/payments/paymongo/webhook` with the events `checkout_session.payment.paid` and every `subscription.*` event.
+2. Set `PAYMENT_PROVIDER=paymongo`, `PAYMONGO_SECRET_KEY`, `PAYMONGO_WEBHOOK_SECRET` and the channel flags. Keep `PAYMONGO_SUBSCRIPTIONS_ENABLED` off until PayMongo support enables Subscriptions.
+3. Run one test payment per channel, a repeated webhook delivery, and, once Subscriptions is on, one test renewal cycle (PayMongo "Create a new test Subscription cycle").
+4. Then follow the order in Verification and migration.
 
 ## Holds
 
@@ -61,7 +123,7 @@ A team with no end date is free for good. Checkout refuses it, and settlement ne
 1. Apply billing migration `drizzle/0009_billing.sql` and Pro tools migration `drizzle/0010_pro_tools.sql` in staging. Runtime schema setup is idempotent. Apply RLS as the table owner and verify `qrCampaigns` has RLS enabled without public policies.
 2. Enable design/campaign/analytics flags on staging and grant a test Pro entitlement.
 3. Verify Free cannot save premium designs, create card two, export CSV, edit CRM metadata or read long analytics ranges. Existing cards above plan limits stay live and editable.
-4. Confirm Google Pay / GCash availability for PHP with the merchant. Verify one sandbox checkout and signed callback, failed payment, duplicate callback and amount mismatch.
+4. Confirm Google Pay / GCash availability for PHP with the merchant. Verify one sandbox checkout and signed callback, failed payment, duplicate callback and amount mismatch. On PayMongo, follow the setup steps in PayMongo.
 5. Enable payment channels in production only after merchant verification. Enable plan limits after checkout succeeds.
 
 The callback is a hint, never proof of payment. The server checks the callback signature and merchant, queries 2C2P directly, compares amount/currency to the stored invoice and settles idempotently. Browser returns never grant Pro.

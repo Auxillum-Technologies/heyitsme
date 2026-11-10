@@ -14,12 +14,12 @@ import { and, asc, eq, isNull } from "drizzle-orm";
 import { workspaceMembers, workspaces } from "../../drizzle/schema";
 import { ENV } from "../_core/env";
 import { clientIp, hashIdentifier, rateLimit } from "../_core/rateLimit";
-import { siteOrigin } from "../_core/seo";
+import { logJson, siteOrigin } from "../_core/seo";
 import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
 import { getDb } from "../db";
 import { requireWorkspaceOwner } from "../teams/access";
 import { assertTeamCapability, teamPlanState } from "../teams/entitlements";
-import { CheckoutClosedError, enabledChannels, enabledCycles, reconcileInvoice, startCheckout, startTeamCheckout, teamsCheckoutOpen,
+import { autoRenewChannels, CheckoutClosedError, enabledChannels, enabledCycles, getPaymentProvider, reconcileInvoice, startCheckout, startTeamCheckout, teamsCheckoutOpen,
 } from "./checkout";
 import { ownerCardHolds } from "./hold";
 import { notifyActivation } from "./paymentRoutes";
@@ -33,6 +33,7 @@ import {
   getUserEntitlements,
   getUserSubscriptions,
   resumeSubscription,
+  stopTeamAutoRenewal,
   teamOfPayment,
 } from "./service";
 
@@ -49,12 +50,28 @@ async function limitOrThrow(key: string, max: number, windowMs: number) {
     });
 }
 
+/** Stops a gateway subscription. A refusal becomes an error that says nothing changed, so the caller changes nothing. */
+function stopAtGateway(log: Record<string, number>) {
+  return (ref: string) =>
+    getPaymentProvider()
+      .cancelSubscription(ref)
+      .catch(error => {
+        logJson("error", "subscription cancel failed at the gateway", { ...log, error: String(error) });
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Your plan could not be stopped at the payment provider. Nothing changed. Please try again in a few minutes.",
+        });
+      });
+}
+
 const CLOSED_MESSAGES: Record<CheckoutClosedError["reason"], string> = {
   payments_off: "Checkout is not open yet.",
   channel_off: "That payment method is not available yet.",
   cycle_off: "Only monthly billing is available.",
   plan_off: "That plan is not available yet.",
   team_free: "This team has no end date, so there is nothing to pay.",
+  auto_renewing: "This plan renews by itself each month, so there is nothing to pay now.",
+  renew_early_auto: "Auto-renewal can start only once the paid time ends. To renew early, pick a one-time payment method.",
 };
 
 /** Turns a checkout failure into a message a buyer can read. Gateway wording stays in the log. */
@@ -72,6 +89,8 @@ function offerFlags() {
   return {
     checkoutOpen: channels.length > 0,
     channels,
+    // Channels whose plan renews by itself each month. Every other channel buys one month at a time.
+    autoRenewChannels: autoRenewChannels(),
     cycles: enabledCycles(),
     proDesignEnabled: ENV.proDesignEnabled,
     qrCampaignsEnabled: ENV.qrCampaignsEnabled,
@@ -123,6 +142,7 @@ export const billingRouter = router({
             foundingMember: current.foundingMember,
             foundingMemberNumber: current.foundingMemberNumber,
             priceMinor: current.priceMinor,
+            renewsAutomatically: Boolean(current.providerSubscriptionRef) && !current.cancelAtPeriodEnd,
           }
         : null,
       ...offerFlags(),
@@ -165,12 +185,12 @@ export const billingRouter = router({
     if (!ENV.teamsEnabled) return [];
     const db = await requireDb();
     const rows = await db
-      .select({ id: workspaces.id, name: workspaces.name, seatLimit: workspaces.seatLimit, accessUntil: workspaces.accessUntil, createdAt: workspaces.createdAt })
+      .select({ id: workspaces.id, name: workspaces.name, seatLimit: workspaces.seatLimit, accessUntil: workspaces.accessUntil, createdAt: workspaces.createdAt, providerSubscriptionRef: workspaces.providerSubscriptionRef })
       .from(workspaceMembers)
       .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
       .where(and(eq(workspaceMembers.userId, ctx.user.id), eq(workspaceMembers.role, "owner"), eq(workspaceMembers.status, "active"), isNull(workspaces.deletedAt)))
       .orderBy(asc(workspaces.name));
-    return rows.map(row => ({ id: row.id, name: row.name, accessUntil: row.accessUntil, state: teamPlanState(row) }));
+    return rows.map(row => ({ id: row.id, name: row.name, accessUntil: row.accessUntil, state: teamPlanState(row), renewsAutomatically: Boolean(row.providerSubscriptionRef) }));
   }),
 
   /** Opens checkout for one team's plan. Only its owner can pay, and the price is the server's. */
@@ -239,7 +259,8 @@ export const billingRouter = router({
   ),
 
   cancelSubscription: protectedProcedure.mutation(async ({ ctx }) => {
-    const updated = await cancelAtPeriodEnd(await requireDb(), ctx.user.id);
+    const db = await requireDb();
+    const updated = await cancelAtPeriodEnd(db, ctx.user.id, stopAtGateway({ userId: ctx.user.id }));
     if (!updated)
       throw new TRPCError({
         code: "NOT_FOUND",
@@ -247,6 +268,17 @@ export const billingRouter = router({
       });
     return { currentPeriodEnd: updated.currentPeriodEnd };
   }),
+
+  /** Stops a team's plan from renewing by itself. Only its owner can. The team keeps its plan date. */
+  cancelTeamSubscription: protectedProcedure
+    .input(z.object({ workspaceId: z.number().int().positive() }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const { workspace } = await requireWorkspaceOwner(db, ctx.user.id, input.workspaceId);
+      const updated = await stopTeamAutoRenewal(db, workspace, stopAtGateway({ userId: ctx.user.id, workspaceId: workspace.id }));
+      if (!updated) throw new TRPCError({ code: "NOT_FOUND", message: "This team's plan does not renew by itself." });
+      return { accessUntil: updated.accessUntil };
+    }),
 
   resumeSubscription: protectedProcedure.mutation(async ({ ctx }) => {
     const updated = await resumeSubscription(await requireDb(), ctx.user.id);

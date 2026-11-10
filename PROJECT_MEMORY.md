@@ -668,3 +668,14 @@ Owner sent an RSVP on a live event and the Responses counts stayed at 0.
 - Second owner report: "still closed even though I opened it in the editor". The editor preview always drew the RSVP form as open (`rsvpState: "open"` is fixed in the preview), so a closed event looked open there. The preview now carries the same notice above the form, and the save button reads "Save changes" (not "Save draft") for closed, ended and archived events.
 - `eventBuilder.css`: `.event-blocked` styles.
 - `pnpm check`, `pnpm test` (527 passed, 3 skipped) and `pnpm build` clean. Not opened in a signed-in browser: the notice and its buttons are unverified on screen.
+
+## 2026-11-09 - PayMongo gateway with Maya auto-renewal (Claude, branch `fm/hm-paymongo-subscriptions`, not merged; every flag still off)
+
+- Owner decision: PayMongo is the gateway. Maya renews by itself through PayMongo Subscriptions. GCash, QR Ph and card pay one prepaid month on the PayMongo hosted page, with a reminder before the plan ends. No card number is typed on heyitsme.
+- Server: `server/billing/paymongo.ts` (adapter), `server/billing/paymongoWebhook.ts` (`POST /api/payments/paymongo/webhook`, signature over the raw body, read back, then `settlePayment`), `PAYMENT_PROVIDER` picks PayMongo or 2C2P (`server/billing/checkout.ts`), renewal reminders in `server/billing/planCron.ts`.
+- Migration `drizzle/0023_paymongo.sql` (also run by `ensureSchema`): `payments.providerCheckoutRef`, `workspaces.providerSubscriptionRef`, two indexes.
+- Status map: PayMongo `past_due` to `past_due` (3-day grace), `unpaid` to `expired`, a cancel at PayMongo to `canceled` at the period end. Cancel stops PayMongo first. Resume makes the plan renewed by hand. A plan that renews by itself refuses a second checkout.
+- Refund: `PayMongoProvider.refundPayment` only, by PayMongo payment id. No screen.
+- Tests: `server/billing/paymongo.test.ts` (adapter, signature, with an openssl test vector) and `server/billing/paymongoFlow.test.ts` (checkout, webhook through the whole Express app, renewals, status, cancel, reminders). Billing UI checked on the production build with real server answers, phone and desktop.
+- Not tested: any real PayMongo call. Subscriptions is not yet on for the account. Setup order in `docs/billing.md`, PayMongo.
+- Still open with the owner: Terms, Privacy and FAQ text for auto-renewal and refunds, and the selling entity's name.

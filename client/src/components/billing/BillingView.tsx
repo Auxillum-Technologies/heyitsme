@@ -1,12 +1,13 @@
 import { PLAN_LABELS, useBilling, useUpgrade } from "@/lib/billing";
 import { trpc } from "@/lib/trpc";
-import { formatPeso } from "@shared/plans";
+import { formatPeso, type PaymentChannel } from "@shared/plans";
 import { motion } from "framer-motion";
 import { CreditCard, Receipt } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import PlanCards from "./PlanCards";
+import { CHANNEL_LABELS } from "./TeamPay";
 import "./billing.css";
 
 const dateText = (value: Date | string) => new Date(value).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric",
@@ -191,7 +192,11 @@ export default function BillingView() {
               <p className="billing-meta">
                 {subscription.cancelAtPeriodEnd
                   ? `Canceled. Pro stays on until ${dateText(subscription.currentPeriodEnd)}, then your account moves to Free. Three days later, cards that still use a Pro feature are paused. Nothing is deleted.`
-                  : `Paid through ${dateText(subscription.currentPeriodEnd)}. We'll remind you before it ends.`}
+                  : subscription.renewsAutomatically && subscription.status === "past_due"
+                    ? "The Maya renewal payment did not go through, and the payment provider tries it again each day. Cancel to stop these tries."
+                  : subscription.renewsAutomatically
+                    ? `Renews by itself on ${dateText(subscription.currentPeriodEnd)}. Cancel before then to stop the next payment.`
+                    : `Paid through ${dateText(subscription.currentPeriodEnd)}. We'll remind you before it ends.`}
               </p>
               <div className="billing-actions">
                 {subscription.cancelAtPeriodEnd ? (
@@ -199,7 +204,7 @@ export default function BillingView() {
                 ) : (
                   <button type="button" className="outline-button" onClick={() => void onCancel()} disabled={cancel.isPending}>Cancel at period end</button>
                 )}
-                {billing.data.checkoutOpen ? (
+                {billing.data.checkoutOpen && !subscription.renewsAutomatically ? (
                   <button type="button" className="glass-button glass-button-primary" onClick={() => openUpgrade("general")}>Renew early</button>
                 ) : null}
               </div>
@@ -266,7 +271,7 @@ export default function BillingView() {
                   <strong>{payment.planCode === "teams" ? "Teams" : "Pro"}</strong>
                   <small>
                     {dateText(payment.createdAt)} ·{" "}
-                    {payment.channel === "gcash" ? "GCash" : "Google Pay"} · #
+                    {CHANNEL_LABELS[payment.channel as PaymentChannel] ?? payment.channel} · #
                     {payment.invoiceNo}
                   </small>
                 </span>
